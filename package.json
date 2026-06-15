@@ -1,0 +1,26 @@
+{
+  "name": "phantom-x",
+  "version": "1.0.0",
+  "description": "Phantom-X — Eventide Omega WhatsApp bot with eclipse/astraea personas, full design system, Baileys (WhiskeySockets), Telegram pairing bridge, session backup to WhatsApp channel, auto-restore on Render restart, and canonical Mac pairing.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": ["whatsapp", "baileys", "bot", "phantom-x", "eventide-omega", "render", "channel-backup"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "@hapi/boom": "^10.0.1",
+    "adm-zip": "^0.5.16",
+    "express": "^4.19.2",
+    "node-telegram-bot-api": "^0.66.0",
+    "pino": "^9.2.0",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
