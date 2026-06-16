@@ -533,9 +533,15 @@ async function initTelegram() {
   if (!TELEGRAM_TOKEN) { console.log('⚠️ No TELEGRAM_TOKEN'); return null; }
   // Delete webhook and drop pending updates to prevent 409 conflicts on restart
   try {
-    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true`);
-    const data = await res.json();
-    console.log('[telegram] Webhook cleanup:', data.ok ? 'OK' : data.description);
+    const https = require('https');
+    const cleanupRes = await new Promise((resolve, reject) => {
+      https.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true`, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve({}); } });
+      }).on('error', reject);
+    });
+    console.log('[telegram] Webhook cleanup:', cleanupRes.ok ? 'OK' : (cleanupRes.description || 'unknown'));
   } catch (e) { console.log('[telegram] Webhook cleanup failed:', e.message); }
   await new Promise(r => setTimeout(r, 1500));
   const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
@@ -648,7 +654,7 @@ app.listen(PORT, () => console.log(`🌐 Server on ${PORT}`));
 async function main() {
   console.log('🚀 Phantom-X starting...');
   loadPersonas();
-  telegramBot = initTelegram();
+  telegramBot = await initTelegram();
 
   const authExists = fs.existsSync(AUTH_DIR) && fs.readdirSync(AUTH_DIR).length > 0;
   if (!authExists && TELEGRAM_BACKUP_CHANNEL) {
