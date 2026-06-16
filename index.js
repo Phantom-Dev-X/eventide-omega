@@ -1,3 +1,4 @@
+const fs = require('fs');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
@@ -115,7 +116,6 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
 
 // TELEGRAM BRIDGE
 let telegramBot = null;
-let telegramPairRequest = null;
 
 function initTelegram() {
   if (!TELEGRAM_TOKEN) { console.log('⚠️ No TELEGRAM_TOKEN — Telegram pairing disabled.'); return null; }
@@ -124,8 +124,49 @@ function initTelegram() {
   bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     bot.sendMessage(chatId, 
-      `🌑 *Welcome to EVENTIDE OMEGA* ☀️\n\nI am Phantom-X.\n\nSend: .pair <your full number with country code>\nExample: .pair 2348012345678\n\nPairing code will be sent here.\n\n— *EVENTIDE OMEGA* · 👁`, 
+      `🌑 *Welcome to EVENTIDE OMEGA* ☀️\n\nI am Phantom-X.\n\nSend: /pair <your full number with country code>\nExample: /pair 2348012345678\n\nPairing code will be sent here.\n\n— *EVENTIDE OMEGA* · 👁`, 
       { parse_mode: 'Markdown' });
+  });
+
+  bot.onText(/\/help/, (msg) => {
+    const chatId = msg.chat.id;
+    bot.sendMessage(chatId,
+      `📖 *TELEGRAM COMMANDS*\n\n/start — Show welcome message\n/pair <number> — Request WhatsApp pairing code\n\nExample: /pair 2348012345678\n\n— *EVENTIDE OMEGA* · 👁`,
+      { parse_mode: 'Markdown' });
+  });
+
+  // /pair with number
+  bot.onText(/\/pair\s+(.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const raw = match[1].trim();
+    const number = raw.replace(/\s+/g, '').replace(/\+/g, '');
+
+    if (!/^\d{10,15}$/.test(number)) {
+      return bot.sendMessage(chatId, '⚠️ Invalid number. Please send your full number with country code (no +).\nExample: /pair 2348012345678');
+    }
+
+    if (!currentSock) {
+      return bot.sendMessage(chatId, '❌ Bot socket is not ready yet. Please wait a moment and try again.');
+    }
+
+    if (currentSock.authState?.creds?.registered) {
+      return bot.sendMessage(chatId, '✅ Bot is already paired and connected. No pairing code needed.');
+    }
+
+    try {
+      await bot.sendMessage(chatId, `⏳ Requesting pairing code for *${number}*...\nPlease wait.`, { parse_mode: 'Markdown' });
+      const code = await currentSock.requestPairingCode(number);
+      await bot.sendMessage(chatId, `🔑 *PAIRING CODE* for ${number}:\n\n\`${code}\`\n\nEnter this in WhatsApp → Linked Devices → Link with phone number.`, { parse_mode: 'Markdown' });
+    } catch (e) {
+      console.error('[Telegram /pair error]', e);
+      await bot.sendMessage(chatId, '❌ Failed to get pairing code. Make sure the bot is running and not already paired.');
+    }
+  });
+
+  // /pair without number (usage hint)
+  bot.onText(/\/pair$/, (msg) => {
+    const chatId = msg.chat.id;
+    bot.sendMessage(chatId, '⚠️ Usage: /pair <your full number with country code>\nExample: /pair 2348012345678');
   });
 
   // DEBUG: Log every message the bot receives (helps diagnose "not replying")
@@ -155,10 +196,10 @@ async function startBot() {
       currentQR = qr;
       console.log('📱 QR ready (scan or use Telegram)');
       qrcodeTerminal.generate(qr, { small: true });
-      if (telegramPairRequest && telegramBot) {
+      if (telegramBot) {
         try {
           const buf = await qrcode.toBuffer(qr);
-          await telegramBot.sendPhoto(telegramPairRequest.chatId, buf, { caption: 'Scan QR or wait for pairing code.' });
+          // Optionally broadcast QR to all recent chats? We'll keep it manual via /pair.
         } catch {}
       }
     }
@@ -170,9 +211,8 @@ async function startBot() {
       isConnected = true;
       currentQR = null;
       console.log('✅ Phantom-X connected!');
-      if (telegramPairRequest && telegramBot) {
-        await telegramBot.sendMessage(telegramPairRequest.chatId, '✅ Paired successfully!');
-        telegramPairRequest = null;
+      if (telegramBot) {
+        // Notify owner or keep silent? We'll keep silent to avoid spam.
       }
     }
   });
@@ -190,8 +230,26 @@ async function startBot() {
 
     const persona = getBotPersona(jid);
 
-    if (lower === '.telegram.pair' || lower === '.pair') {
-      const reply = buildOmegaTerminal(TELEGRAM_TOKEN ? 'Telegram bridge active. Use your Telegram bot + .pair <number> there.' : 'No TELEGRAM_TOKEN set in Render.');
+    if (lower.startsWith('.pair')) {
+      const parts = text.trim().split(/\s+/);
+      const number = parts[1] ? parts[1].replace(/\+/g, '').replace(/\s/g, '') : '';
+      if (!number || !/^\d{10,15}$/.test(number)) {
+        const reply = buildOmegaTerminal('Usage: .pair <full number with country code>\nExample: .pair 2348012345678\n\nOr use Telegram: /pair <number>');
+        await currentSock.sendMessage(jid, { text: reply }, { quoted: msg });
+        return;
+      }
+      try {
+        const code = await currentSock.requestPairingCode(number);
+        await currentSock.sendMessage(jid, { text: buildOmegaTerminal(`🔑 PAIRING CODE: \`${code}\`\nEnter in WhatsApp Linked Devices.`) }, { quoted: msg });
+      } catch (e) {
+        console.error('[WhatsApp .pair error]', e);
+        await currentSock.sendMessage(jid, { text: buildOmegaTerminal('Failed to get pairing code. Bot may already be paired or number is invalid.') }, { quoted: msg });
+      }
+      return;
+    }
+
+    if (lower === '.telegram.pair') {
+      const reply = buildOmegaTerminal(TELEGRAM_TOKEN ? 'Telegram bridge active. Use your Telegram bot + /pair <number> there.' : 'No TELEGRAM_TOKEN set in Render.');
       await currentSock.sendMessage(jid, { text: reply }, { quoted: msg });
       return;
     }
@@ -219,7 +277,7 @@ async function startBot() {
     }
 
     if (lower === '.help') {
-      await currentSock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.telegram.pair — cloud pairing\n\nMore coming.') }, { quoted: msg });
+      await currentSock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.pair <number> — request pairing code\n.telegram.pair — cloud pairing info\n\nMore coming.') }, { quoted: msg });
       return;
     }
 
@@ -227,20 +285,6 @@ async function startBot() {
       await currentSock.sendMessage(jid, { text: eclipseSay('bad_use', persona) }, { quoted: msg });
     }
   });
-
-  // Telegram pairing code handler
-  setInterval(async () => {
-    if (telegramPairRequest && currentSock && !currentSock.authState.creds.registered) {
-      const { chatId, number, bot } = telegramPairRequest;
-      try {
-        const code = await currentSock.requestPairingCode(number);
-        await bot.sendMessage(chatId, `🔑 PAIRING CODE for ${number}:\n\n\`${code}\`\n\nEnter in WhatsApp Linked Devices.`);
-        telegramPairRequest = null;
-      } catch (e) {
-        await bot.sendMessage(chatId, 'Failed to get code. Bot must be running.');
-      }
-    }
-  }, 3000);
 }
 
 // EXPRESS SERVER (Render Web Service)
@@ -252,7 +296,7 @@ app.get('/qr', async (req, res) => {
     const buf = await qrcode.toBuffer(currentQR);
     res.set('Content-Type', 'image/png'); res.send(buf);
   } else {
-    res.send(isConnected ? 'Connected — no QR' : 'No QR. Use Telegram .pair or restart.');
+    res.send(isConnected ? 'Connected — no QR' : 'No QR. Use Telegram /pair or restart.');
   }
 });
 app.listen(PORT, () => console.log(`🌐 Server on ${PORT}`));
