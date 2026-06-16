@@ -7,12 +7,20 @@
     "start": "node index.js",
     "dev": "node index.js"
   },
-  "keywords": ["whatsapp", "baileys", "bot", "phantom-x", "eventide-omega", "render", "channel-backup"],
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "bot",
+    "phantom-x",
+    "eventide-omega",
+    "render",
+    "channel-backup"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.9",
     "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "6.7.23",
     "adm-zip": "^0.5.16",
     "express": "^4.19.2",
     "node-telegram-bot-api": "^0.66.0",
