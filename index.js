@@ -22,6 +22,7 @@ let hasBackedUp = false;
 let socketGeneration = 0;
 let reconnectTimer = null;
 let isPairing = false;
+let botStartTime = Date.now();
 
 // ==================== FULL DESIGN SYSTEM (EXACT FROM DESIGN_SYSTEM.md) ====================
 const ECLIPSE_WIDTH = 30;
@@ -225,6 +226,14 @@ function createMessageStore(limit = 2000) {
 }
 function clearReconnectTimer() {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; console.log('[reconnect] Timer cancelled'); }
+}
+function formatUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  const sec = s % 60;
+  const min = m % 60;
+  return `${h}h ${min}m ${sec.toString().padStart(2, '0')}s`;
 }
 
 // ── Telegram Auth Backup / Restore ──────────────────────────────────────
@@ -452,12 +461,40 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
       }
 
       if (lower === '.ping') {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal(`📡 SIGNAL: ${isConnected ? 'BOUND' : 'FADING'}\nPersona: *${persona.toUpperCase()}*`) }, { quoted: msg });
+        const now = Date.now();
+        const latency = msg.messageTimestamp ? Math.max(0, Math.floor(now - (msg.messageTimestamp * 1000))) : 0;
+        const resonance = isConnected ? (latency < 500 ? 'STABLE' : 'MODERATE') : 'DEGRADED';
+        const uptime = formatUptime(now - botStartTime);
+        const body = `            — *S I G N A L* —
+
+   ⚡ *LATENCY* ──╼  [ ${latency}ms ]
+   📡 *RESONANCE* ──╼  [ ${resonance} ]
+   ⏱️ *UPTIME* ──╼  [ ${uptime} ]
+
+   " *An echo in the void is*
+     *the only proof you exist* ."`;
+        await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, { quoted: msg });
+        return;
+      }
+
+      if (lower === '.dev') {
+        const devName = process.env.DEV_NAME || 'Phantom dev x';
+        const devNumber = process.env.DEV_NUMBER || '2348102756072';
+        const devVessel = process.env.DEV_VESSEL || 'PRIMARY_VESSEL_01';
+        const body = `      ◢◤ *THE ARCHITECT* ◢◤
+
+      [ 👤 ] : ${devName}
+      [ 🌐 ] : wa.me/${devNumber}
+      [ 🏮 ] : *${devVessel}*
+
+   " *Creation is the first step*
+     *toward destruction* ."`;
+        await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, { quoted: msg });
         return;
       }
 
       if (lower === '.help') {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n\nMore coming.') }, { quoted: msg });
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n\nMore coming.') }, { quoted: msg });
         return;
       }
 
