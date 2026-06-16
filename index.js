@@ -529,8 +529,15 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
 // ── TELEGRAM BRIDGE ────────────────────────────────────────────────────
 let telegramBot = null;
 
-function initTelegram() {
+async function initTelegram() {
   if (!TELEGRAM_TOKEN) { console.log('⚠️ No TELEGRAM_TOKEN'); return null; }
+  // Delete webhook and drop pending updates to prevent 409 conflicts on restart
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true`);
+    const data = await res.json();
+    console.log('[telegram] Webhook cleanup:', data.ok ? 'OK' : data.description);
+  } catch (e) { console.log('[telegram] Webhook cleanup failed:', e.message); }
+  await new Promise(r => setTimeout(r, 1500));
   const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
   bot.onText(/\/start/, (msg) => {
