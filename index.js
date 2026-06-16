@@ -22,7 +22,6 @@ let hasBackedUp = false;
 let socketGeneration = 0;
 let reconnectTimer = null;
 let isPairing = false;
-let wasEverConnected = false;
 
 // ==================== FULL DESIGN SYSTEM ====================
 const ECLIPSE_WIDTH = 30;
@@ -180,7 +179,7 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
   const myGen = ++socketGeneration;
   console.log(`[socket] Gen ${myGen} starting. phone=${phoneNumber || 'null'}`);
   clearReconnectTimer();
-  isPairing = !!phoneNumber;
+  if (phoneNumber) isPairing = true; // only set when starting a fresh pairing
 
   // 1. Hard-kill previous socket
   if (currentSock) {
@@ -306,7 +305,7 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
       if (lower === '.relink') {
         await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Clearing session and restarting...\nPlease wait 15-20 seconds.') }, { quoted: msg });
         try { sock.end(new Error('relink')); } catch (_) {}
-        currentSock = null; clearAuth(); clearReconnectTimer(); isPairing = false; wasEverConnected = false;
+        currentSock = null; clearAuth(); clearReconnectTimer(); isPairing = false;
         setTimeout(() => startBot(null, null).catch(console.error), 4000);
         return;
       }
@@ -360,24 +359,35 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
     if (qr) { currentQR = qr; console.log('📱 QR ready'); qrcodeTerminal.generate(qr, { small: true }); }
 
     if (connection === 'close') {
-      isConnected = false; currentQR = null; isPairing = false;
+      isConnected = false; currentQR = null;
       const statusCode = (lastDisconnect?.error instanceof Boom) ? lastDisconnect.error.output?.statusCode : undefined;
       const reason = lastDisconnect?.error?.message || '';
-      console.log(`🔌 Gen ${myGen} closed (code=${statusCode}, reason=${reason}). everConnected=${everConnected}`);
 
-      // NEVER auto-reconnect if we never connected successfully
-      // This prevents ghost sockets after failed pairing attempts
-      if (!everConnected) {
-        console.log(`[socket] Gen ${myGen} never connected — NOT reconnecting`);
+      // 515 = Restart Required — this is NORMAL during pairing completion.
+      // WhatsApp sends this after you enter the pairing code on your phone.
+      // We MUST reconnect quickly with the same auth to complete the handshake.
+      if (statusCode === 515) {
+        console.log(`🔌 Gen ${myGen} 515 restart required — reconnecting quickly to complete pairing`);
+        try { await saveCreds(); } catch (_) {} // ensure auth is saved before restart
+        if (socketGeneration === myGen) {
+          reconnectTimer = setTimeout(() => startBot(null, null), 800);
+        }
         return;
       }
 
-      // Only reconnect after successful connection, and only if not logged out
-      if (statusCode !== DisconnectReason.loggedOut && socketGeneration === myGen) {
+      const should = statusCode !== DisconnectReason.loggedOut;
+      console.log(`🔌 Gen ${myGen} closed (code=${statusCode}, reason=${reason}). everConnected=${everConnected}`);
+
+      if (!everConnected) {
+        console.log(`[socket] Gen ${myGen} never connected — pairing failed, clearing auth`);
+        isPairing = false;
+        clearAuth();
+        return;
+      }
+
+      if (should && socketGeneration === myGen) {
         console.log(`[socket] Gen ${myGen} scheduling reconnect in 5s`);
-        reconnectTimer = setTimeout(() => {
-          if (socketGeneration === myGen) startBot(null, null);
-        }, 5000);
+        reconnectTimer = setTimeout(() => startBot(null, null), 5000);
       }
     } else if (connection === 'open') {
       everConnected = true; isConnected = true; currentQR = null; isPairing = false;
@@ -431,7 +441,7 @@ function initTelegram() {
       try { currentSock.ev.removeAllListeners(); currentSock.end(new Error('new-pair')); } catch (_) {}
       currentSock = null;
     }
-    clearReconnectTimer(); clearAuth(); wasEverConnected = false;
+    clearReconnectTimer(); clearAuth();
     await bot.sendMessage(chatId, '🔄 Generating pairing code... please wait 15-20 seconds.\nDo not send other commands until you receive the code.');
     startBot(phone, { reply: (t, opts) => bot.sendMessage(chatId, t, opts) }).catch((err) => {
       console.error('[Telegram /pair]', err);
@@ -450,7 +460,7 @@ function initTelegram() {
       try { currentSock.ev.removeAllListeners(); currentSock.end(new Error('relink')); } catch (_) {}
       currentSock = null;
     }
-    clearReconnectTimer(); clearAuth(); isPairing = false; wasEverConnected = false;
+    clearReconnectTimer(); clearAuth(); isPairing = false;
     setTimeout(() => startBot(null, null).catch(console.error), 4000);
   });
 
