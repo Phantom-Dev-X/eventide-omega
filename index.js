@@ -511,7 +511,7 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
     if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} ignoring stale update`); return; }
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) { currentQR = qr; console.log('📱 QR ready'); qrcodeTerminal.generate(qr, { small: true }); }
+    if (qr) { currentQR = qr; console.log('📱 QR ready — use Telegram /pair or /qr endpoint to scan'); }
 
     if (connection === 'close') {
       isConnected = false; currentQR = null;
@@ -533,11 +533,20 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
       const should = statusCode !== DisconnectReason.loggedOut;
       console.log(`🔌 Gen ${myGen} closed (code=${statusCode}, reason=${reason}). everConnected=${everConnected}`);
 
-      if (!everConnected) {
-        console.log(`[socket] Gen ${myGen} never connected — pairing failed, clearing auth`);
+      if (!everConnected && isPairing) {
+        // Only clear auth if we were actively trying to pair and it failed.
+        // If we were just reconnecting with restored auth, do NOT wipe it — retry.
+        console.log(`[socket] Gen ${myGen} pairing failed, clearing auth`);
         isPairing = false;
         clearAuth();
+        if (telegramCtx) {
+          await telegramCtx.reply('❌ Pairing attempt failed. Auth cleared.\nTry /pair again or /restore to load a saved backup.');
+        }
         return;
+      }
+      if (!everConnected && !isPairing) {
+        // Restored auth failed to reconnect — keep auth and retry
+        console.log(`[socket] Gen ${myGen} reconnection failed with restored auth — will retry (not clearing)`);
       }
 
       if (should && socketGeneration === myGen) {
