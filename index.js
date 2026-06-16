@@ -17,7 +17,9 @@ const PORT = process.env.PORT || 3000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || null;
 const TELEGRAM_BACKUP_CHANNEL = process.env.TELEGRAM_BACKUP_CHANNEL || null;
 const CUSTOM_PAIR_CODE = process.env.CUSTOM_PAIR_CODE || null;
+
 let hasBackedUp = false;
+let socketGeneration = 0; // increments every time we kill/start a socket
 
 // ==================== FULL DESIGN SYSTEM ====================
 const ECLIPSE_WIDTH = 30;
@@ -28,7 +30,6 @@ function eclipseCenter(text) {
   const pad = Math.floor((ECLIPSE_WIDTH - t.length) / 2);
   return " ".repeat(pad) + t;
 }
-function eclipseHeader(title) { return `${ECLIPSE_BORDER}\n${eclipseCenter(title)}\n${ECLIPSE_BORDER}`; }
 function buildOmegaTerminal(body) {
   return `╔══════════╦══════════════╗\n║       ⚠ *EVENTIDE OMEGA TERMINAL*\n║                           *ACCESS*\n╚═══════════╩═════════════╝\n\n${body}\n\n— *EVENTIDE OMEGA* · 👁`;
 }
@@ -99,14 +100,13 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
-function normalizeNum(input) {
-  return String(input || '').replace(/[^\d]/g, '');
-}
+function normalizeNum(input) { return String(input || '').replace(/[^\d]/g, ''); }
 async function sendReaction(sock, jid, key, emoji) {
   try { await sock.sendMessage(jid, { react: { text: emoji, key } }); } catch (_) {}
 }
 function clearAuth() {
   try { if (fs.existsSync(AUTH_DIR)) { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); console.log(`[auth] Cleared ${AUTH_DIR}`); } } catch (e) { console.error('[auth] clearAuth error:', e); }
+  hasBackedUp = false; // reset so new successful pair can backup again
 }
 function createMessageStore(limit = 2000) {
   const map = new Map();
@@ -117,12 +117,10 @@ function createMessageStore(limit = 2000) {
 }
 
 // ── Telegram Auth Backup / Restore ──────────────────────────────────────
-// TELEGRAM_BACKUP_CHANNEL can be a numeric ID (-100...) or username like @channelname
 async function backupAuthToChannel() {
   if (!TELEGRAM_BACKUP_CHANNEL || !telegramBot || hasBackedUp) return;
   try {
     if (!fs.existsSync(AUTH_DIR)) return;
-    // 1. Unpin and delete previous pinned backup
     try {
       const chat = await telegramBot.getChat(TELEGRAM_BACKUP_CHANNEL);
       if (chat.pinned_message && chat.pinned_message.message_id) {
@@ -130,8 +128,7 @@ async function backupAuthToChannel() {
         await telegramBot.deleteMessage(TELEGRAM_BACKUP_CHANNEL, chat.pinned_message.message_id);
         console.log(`[backup] Deleted previous pinned msg ${chat.pinned_message.message_id}`);
       }
-    } catch (e) { console.log('[backup] No previous pinned msg to delete:', e.message); }
-    // 2. Send new backup
+    } catch (e) { console.log('[backup] No previous pinned msg:', e.message); }
     const zip = new AdmZip();
     zip.addLocalFolder(AUTH_DIR);
     const zipBuf = zip.toBuffer();
@@ -140,7 +137,6 @@ async function backupAuthToChannel() {
       caption: `🌑 *Phantom-X Auth Backup*\n📅 ${new Date().toISOString()}\n— EVENTIDE OMEGA`,
       parse_mode: 'Markdown'
     });
-    // 3. Pin new backup
     await telegramBot.pinChatMessage(TELEGRAM_BACKUP_CHANNEL, sent.message_id, { disable_notification: true });
     hasBackedUp = true;
     console.log(`[backup] Auth backed up to channel, msg_id=${sent.message_id}`);
@@ -169,8 +165,24 @@ let currentQR = null;
 let isConnected = false;
 
 async function startBot(phoneNumber = null, telegramCtx = null) {
-  if (currentSock) { try { currentSock.end(new Error('restart')); } catch (_) {} currentSock = null; }
-  await new Promise(r => setTimeout(r, 500));
+  const myGen = ++socketGeneration;
+  console.log(`[socket] Generation ${myGen} starting. phone=${phoneNumber || 'null'}`);
+
+  // 1. Kill previous socket completely and wait
+  if (currentSock) {
+    try { currentSock.end(new Error('restart')); } catch (_) {}
+    currentSock = null;
+  }
+  await new Promise(r => setTimeout(r, 2000)); // wait for old socket to fully die
+  if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} stale — aborting`); return; }
+
+  // 2. If pairing was requested but local auth exists, clear it first
+  if (phoneNumber && fs.existsSync(AUTH_DIR)) {
+    clearAuth();
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} stale — aborting`); return; }
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
@@ -195,7 +207,7 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
   });
   currentSock = sock;
 
-  // ── Pairing code (only when QR is emitted) ───────────────────────────
+  // ── Pairing code (waits for QR signal inside connection.update) ──────
   if (phoneNumber && !sock.authState.creds.registered) {
     const pairPromise = new Promise((resolve) => {
       const onUpdate = async ({ qr, connection }) => {
@@ -203,21 +215,26 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
         sock.ev.off('connection.update', onUpdate);
         try {
           const code = await sock.requestPairingCode(normalizeNum(phoneNumber), CUSTOM_PAIR_CODE);
-          console.log('[pairing] Code:', code);
+          console.log('[pairing] Code generated:', code);
           resolve({ ok: true, code });
-        } catch (err) { console.error('[pairing] requestPairingCode failed:', err?.message); resolve({ ok: false, err }); }
+        } catch (err) {
+          console.error('[pairing] requestPairingCode failed:', err?.message);
+          resolve({ ok: false, err });
+        }
       };
       sock.ev.on('connection.update', onUpdate);
-      setTimeout(() => resolve({ ok: false, err: new Error('timeout') }), 120_000);
+      setTimeout(() => { sock.ev.off('connection.update', onUpdate); resolve({ ok: false, err: new Error('timeout') }); }, 120_000);
     });
+
     const pairResult = await pairPromise;
     if (!pairResult.ok) {
+      console.error('[pairing] Pairing failed:', pairResult.err?.message);
       try { sock.end(new Error('pair-failed')); } catch (_) {}
       currentSock = null; clearAuth();
       if (telegramCtx) {
-        await telegramCtx.reply('❌ Failed to generate pairing code.\n\nTry:\n1. /relink then /pair again\n2. Check number format (no +, no leading 0 after country code)');
+        await telegramCtx.reply('❌ Failed to generate pairing code. WhatsApp rejected the handshake.\n\nTry:\n1. Send /relink to start completely fresh\n2. Make sure your number is correct (e.g. 2348012345678, no +, no leading 0 after country code)\n3. Wait 5 seconds then send /pair again');
       }
-      return;
+      return; // STOP — don't install the second connection.update listener
     }
     if (telegramCtx) {
       await telegramCtx.reply('✅ *Pairing code is ready!*\n\nOpen WhatsApp → Settings → Linked Devices → Link a Device → Enter code manually.\n\nHere is your code 👇', { parse_mode: 'Markdown' });
@@ -225,27 +242,29 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
     }
   }
 
-  // ── Connection lifecycle ─────────────────────────────────────────────
+  // ── Connection lifecycle (ONLY this generation handles reconnects) ───
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
+    if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} ignoring update (stale)`); return; }
+
     if (qr) { currentQR = qr; console.log('📱 QR ready'); qrcodeTerminal.generate(qr, { small: true }); }
     if (connection === 'close') {
       isConnected = false; currentQR = null;
       const statusCode = (lastDisconnect?.error instanceof Boom) ? lastDisconnect.error.output?.statusCode : undefined;
       const should = statusCode !== DisconnectReason.loggedOut;
-      console.log(`🔌 Closed (code=${statusCode}). Reconnect: ${should}`);
-      if (should) setTimeout(() => startBot(null, null), 3000);
+      console.log(`🔌 Gen ${myGen} closed (code=${statusCode}). Reconnect: ${should}`);
+      if (should && socketGeneration === myGen) {
+        setTimeout(() => startBot(null, null), 3000);
+      }
     } else if (connection === 'open') {
       isConnected = true; currentQR = null;
       console.log('✅ Phantom-X connected!');
-      // 1. Self-chat message after 2s
       setTimeout(async () => {
         try {
           const selfJid = sock.user?.id;
           if (selfJid) await sock.sendMessage(selfJid, { text: '🌑 *Phantom-X is online* · 👁\n\nType *.help* to see commands.' });
         } catch (e) { console.error('[self-chat]', e.message); }
       }, 2000);
-      // 2. Backup auth to Telegram channel
       await backupAuthToChannel();
       if (telegramCtx) {
         await telegramCtx.reply('🌑 *Phantom-X is now connected!* ☀️\nYour WhatsApp is linked.\n\n— *EVENTIDE OMEGA* · 👁', { parse_mode: 'Markdown' });
@@ -259,7 +278,6 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
     if (type !== 'notify') return;
     const msg = messages[0];
     if (!msg.message) return;
-    // REMOVED: msg.key.fromMe check — it was blocking self-chat commands
 
     socketMsgStore.set(msg);
     const jid = msg.key.remoteJid;
@@ -270,9 +288,7 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
     console.log(`[msg] from=${jid} fromMe=${msg.key.fromMe} text=${text.slice(0,40)}`);
     const persona = getBotPersona(jid);
 
-    if (lower.startsWith('.')) {
-      await sendReaction(sock, jid, msg.key, '⚡');
-    }
+    if (lower.startsWith('.')) { await sendReaction(sock, jid, msg.key, '⚡'); }
 
     if (lower.startsWith('.pair')) {
       const parts = text.trim().split(/\s+/);
@@ -294,7 +310,7 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
       await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Clearing session and restarting...\nPlease wait 10-15 seconds.') }, { quoted: msg });
       try { sock.end(new Error('relink')); } catch (_) {}
       currentSock = null; clearAuth();
-      setTimeout(() => startBot(null, null).catch(console.error), 2000);
+      setTimeout(() => startBot(null, null).catch(console.error), 3000);
       return;
     }
 
@@ -363,9 +379,10 @@ function initTelegram() {
       return bot.sendMessage(chatId, '⚠️ Invalid number. Send with country code, no symbols.\nExample: /pair 2348012345678');
     }
     if (isConnected) return bot.sendMessage(chatId, '✅ Already paired. No code needed.');
+    // Hard kill and clear
     if (currentSock) { try { currentSock.end(new Error('new-pair')); } catch (_) {} currentSock = null; }
     clearAuth();
-    await bot.sendMessage(chatId, '🔄 Generating pairing code... please wait 10-15 seconds.\nDo not send other commands until you receive the code.');
+    await bot.sendMessage(chatId, '🔄 Generating pairing code... please wait 15-20 seconds.\nDo not send other commands until you receive the code.');
     startBot(phone, { reply: (t, opts) => bot.sendMessage(chatId, t, opts) }).catch((err) => {
       console.error('[Telegram /pair]', err);
       bot.sendMessage(chatId, '❌ Unexpected error. Try /relink then /pair again.');
@@ -378,10 +395,10 @@ function initTelegram() {
 
   bot.onText(/\/relink/, (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, '🔄 Clearing session and restarting...\nPlease wait 10-15 seconds, then send /pair again.');
+    bot.sendMessage(chatId, '🔄 Clearing session and restarting...\nPlease wait 15-20 seconds, then send /pair again.');
     if (currentSock) { try { currentSock.end(new Error('relink')); } catch (_) {} currentSock = null; }
     clearAuth();
-    setTimeout(() => startBot(null, null).catch(console.error), 2000);
+    setTimeout(() => startBot(null, null).catch(console.error), 3000);
   });
 
   bot.on("message", (msg) => {
