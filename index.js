@@ -542,13 +542,13 @@ async function initTelegram() {
 
   bot.onText(/\/start/, (msg) => {
     bot.sendMessage(msg.chat.id,
-      `🌑 *Welcome to EVENTIDE OMEGA* ☀️\n\nI am Phantom-X.\n\nSend: /pair <your full number with country code>\nExample: /pair 2348012345678\n\nPairing code will be sent here.\n\nUse /relink if pairing keeps failing.\n\n— *EVENTIDE OMEGA* · 👁`,
+      `🌑 *Welcome to EVENTIDE OMEGA* ☀️\n\nI am Phantom-X.\n\nSend: /pair <your full number with country code>\nExample: /pair 2348012345678\n\nPairing code will be sent here.\n\nUse /relink if pairing keeps failing.\nUse /restore to reconnect from previous backup.\n\n— *EVENTIDE OMEGA* · 👁`,
       { parse_mode: 'Markdown' });
   });
 
   bot.onText(/\/help/, (msg) => {
     bot.sendMessage(msg.chat.id,
-      `📖 *TELEGRAM COMMANDS*\n\n/start — Welcome message\n/pair <number> — Request pairing code\n/relink — Clear session and restart\n\nExample: /pair 2348012345678\n\n— *EVENTIDE OMEGA* · 👁`,
+      `📖 *TELEGRAM COMMANDS*\n\n/start — Welcome message\n/pair <number> — Request pairing code\n/relink — Clear session and restart\n/backup — Save current session to channel\n/restore — Restore session from channel backup\n\nExample: /pair 2348012345678\n\n— *EVENTIDE OMEGA* · 👁`,
       { parse_mode: 'Markdown' });
   });
 
@@ -592,11 +592,40 @@ async function initTelegram() {
   // /backup command — force backup now
   bot.onText(/\/backup/, async (msg) => {
     const chatId = msg.chat.id;
+    if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) {
+      return bot.sendMessage(chatId, '⚠️ Nothing to backup — auth_info folder is empty.\nPair the bot first with /pair <number>.');
+    }
     await bot.sendMessage(chatId, '🔄 Forcing backup now...');
     hasBackedUp = false; // reset so it will backup
     await backupAuthToChannel();
     if (hasBackedUp) await bot.sendMessage(chatId, '✅ Backup sent to channel and pinned!');
     else await bot.sendMessage(chatId, '❌ Backup failed. Check logs and make sure TELEGRAM_BACKUP_CHANNEL is set and the bot is admin in the channel.');
+  });
+
+  // /restore command — pull pinned backup from channel and reconnect
+  bot.onText(/\/restore/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!TELEGRAM_BACKUP_CHANNEL) {
+      return bot.sendMessage(chatId, '❌ TELEGRAM_BACKUP_CHANNEL not set in environment variables.');
+    }
+    await bot.sendMessage(chatId, '🔄 Checking Telegram channel for pinned backup...');
+    try {
+      const restored = await restoreAuthFromChannel();
+      if (!restored) {
+        return bot.sendMessage(chatId, '❌ No pinned backup found in the channel.\nMake sure you ran /backup after pairing successfully.');
+      }
+      await bot.sendMessage(chatId, '✅ Backup restored! Restarting bot to connect...\nPlease wait 10-15 seconds.');
+      // Kill current socket, restart with restored auth
+      if (currentSock) {
+        try { currentSock.ev.removeAllListeners(); currentSock.end(new Error('restore')); } catch (_) {}
+        currentSock = null;
+      }
+      clearReconnectTimer(); isConnected = false; currentQR = null; isPairing = false;
+      setTimeout(() => startBot(null, { reply: (t, opts) => bot.sendMessage(chatId, t, opts) }).catch(console.error), 2000);
+    } catch (e) {
+      console.error('[restore cmd]', e);
+      await bot.sendMessage(chatId, '❌ Restore failed: ' + e.message);
+    }
   });
 
   bot.on("message", (msg) => {
