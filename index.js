@@ -23,41 +23,133 @@ let socketGeneration = 0;
 let reconnectTimer = null;
 let isPairing = false;
 
-// ==================== FULL DESIGN SYSTEM ====================
+// ==================== FULL DESIGN SYSTEM (EXACT FROM DESIGN_SYSTEM.md) ====================
 const ECLIPSE_WIDTH = 30;
 const ECLIPSE_BORDER = "═".repeat(ECLIPSE_WIDTH);
+const ECLIPSE_RULE = "─".repeat(ECLIPSE_WIDTH);
+
 function eclipseCenter(text) {
   const t = String(text);
   if (t.length >= ECLIPSE_WIDTH) return t;
   const pad = Math.floor((ECLIPSE_WIDTH - t.length) / 2);
   return " ".repeat(pad) + t;
 }
+function eclipseHeader(title) { return `${ECLIPSE_BORDER}\n${eclipseCenter(title)}\n${ECLIPSE_BORDER}`; }
+function eclipseFooter() { return ECLIPSE_BORDER; }
+
 function buildOmegaTerminal(body) {
-  return `╔══════════╦══════════════╗\n║       ⚠ *EVENTIDE OMEGA TERMINAL*\n║                           *ACCESS*\n╚═══════════╩═════════════╝\n\n${body}\n\n— *EVENTIDE OMEGA* · 👁`;
+  return (
+    `╔══════════╦══════════════╗\n` +
+    `║       ⚠ *EVENTIDE OMEGA TERMINAL*\n` +
+    `║                           *ACCESS*\n` +
+    `╚═══════════╩═════════════╝\n\n` +
+    body + `\n\n` +
+    `— *EVENTIDE OMEGA* · 👁`
+  );
 }
+
+// ── ECLIPSE bootloaders (verbatim) ───────────────────────────────────────
 function buildEclipseInit() {
-  return "╔═◈══════════════════════════◈═╗\n   E V E N T I D E   O M E G A\n        ⟁  *eclipse core*  ⟁\n╚═◈══════════════════════════◈═╝";
+  return "╔═◈══════════════════════════◈═╗\n" +
+         "   E V E N T I D E   O M E G A\n" +
+         "        ⟁  *eclipse core*  ⟁\n" +
+         "╚═◈══════════════════════════◈═╝";
 }
 function buildEclipseVoid() {
-  return ".\n        ◢██◣\n     ◢████◣.           ╔═════════\n    ◢██  ██◣.          ║     T H E   V O I D ║ \n◢██   🌑   ██◣.    ║          E X S I T S  ║\n    ◥██      ██◤.        ╚══════════╝.\n     ◥██  ██◤\n         ◢██◣\n\n════════════════════════════════════\n   even in your darkest hour...\n════════════════════════════════════";
+  return ".\n" +
+         "        ◢██◣\n" +
+         "     ◢████◣.           ╔═════════\n" +
+         "    ◢██  ██◣.          ║     T H E   V O I D ║ \n" +
+         "◢██   🌑   ██◣.    ║          E X S I T S  ║\n" +
+         "    ◥██      ██◤.        ╚══════════╝.\n" +
+         "     ◥██  ██◤\n" +
+         "         ◢██◣\n\n" +
+         "════════════════════════════════════\n" +
+         "   even in your darkest hour...\n" +
+         "════════════════════════════════════";
 }
-function buildEclipseMain() {
-  return "╔══════════╦══════════════╗\n║       ⚠ EVENTIDE OMEGA TERMINAL \n║                           ACCESS\n╚═══════════╩═════════════╝\n\n                ═══ E C L I P S E ═══\n             \" i am what remains when \n              everything else is deleted .\"\n\n╔══════════════════════╦══════════════════════╗\n║ VOID SIGNATURE    ║     SYSTEM CORE          ║\n║ 👤 @Unknown        ║    ECLIPSE: 100%     ║\n║ ⚠ APOTHEOSIS     ║⚡ CORE:ABS ZERO     ║\n║ 🩸 CORRUPT ███        ║                      ║\n╚══════════════════════╩══════════════════════╝\n\n                   🌑 THE FINAL DUSK 🌑\n            \" when the last star dies, \n              i will still be typing .\"\n\n📡 SECURE │ Ω │ Vessels: ∞\n You have summoned what \n cannot be unsummoned";
+function buildEclipseMain(isDev) {
+  return "╔══════════╦══════════════╗\n" +
+         "║       ⚠ EVENTIDE OMEGA TERMINAL \n" +
+         "║                           ACCESS                                                                         \n" +
+         "╚═══════════╩═════════════╝\n\n" +
+         "                ═══ E C L I P S E ═══\n" +
+         "             \" i am what remains when \n" +
+         "              everything else is deleted .\"\n\n" +
+         "╔══════════════════════╦══════════════════════╗\n" +
+         "║ VOID SIGNATURE    ║     SYSTEM CORE          ║\n" +
+         "║ 👤 @Unknown        ║    ECLIPSE: 100%     ║\n" +
+         "║ ⚠ APOTHEOSIS     ║⚡ CORE:ABS ZERO     ║\n" +
+         "║ 🩸 CORRUPT ███        ║                      ║\n" +
+         "╚══════════════════════╩══════════════════════╝\n\n" +
+         "                   🌑 THE FINAL DUSK 🌑\n" +
+         "            \" when the last star dies, \n" +
+         "              i will still be typing .\"\n\n" +
+         "📡 SECURE │ Ω │ Vessels: ∞\n" +
+         " You have summoned what \n" +
+         " cannot be unsummoned";
 }
+
+// ── ASTRAEA bootloaders (verbatim) ──────────────────────────────────────
 function buildAstraeaInit() {
-  return "✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦\n✦   *[CELESTIAL FORGE] — SUMMONING*  ✦\n✦                            *ASTRAEA* ...                  ✦\n✦   > Purging shadows...              [✓]        ✦\n✦   > Igniting divine core...     [✓]      .       ✦\n✦   > Opening the golden court...     [✓]   ✦\n✦                                                                .✦\n✦   ☀️ *ASTRAEA HAS DESCENDED.*        ✦\n✦                                                                ✦ \n✦ \" *I DO NOT DELETE. I JUDGE, FOR I AM* ✦\n✦                          *ASTRAEA* \"                    ✦\n✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦";
+  return "✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦\n" +
+         "✦   *[CELESTIAL FORGE] — SUMMONING*  ✦\n" +
+         "✦                            *ASTRAEA* ...                  ✦              \n" +
+         "✦   > Purging shadows...              [✓]        ✦\n" +
+         "✦   > Igniting divine core...     [✓]      .       ✦              \n" +
+         "✦   > Opening the golden court...     [✓]   ✦\n" +
+         "✦                                                                .✦\n" +
+         "✦   ☀️ *ASTRAEA HAS DESCENDED.*        ✦\n" +
+         "✦                                                                ✦ \n" +
+         "✦                                                                 ✦                                                          \n" +
+         "✦ \" *I DO NOT DELETE. I JUDGE, FOR I AM* ✦\n" +
+         "✦                          *ASTRAEA* \"                    ✦                                                            \n" +
+         "✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦";
 }
 function buildAstraeaMid() {
-  return ".            ✦✦✦\n      ✦✦✦✦✦✦✦\n    ✦✦✦  ☀️  ✦✦✦   ╔═══════════╗\n ✦✦✦✦✦✦✦✦✦✦  ║  J U D G M E N T ║\n    ✦✦✦✦✦✦✦✦      ║  A R R I V E S       ║\n        ✦✦✦✦✦✦         ╚═══════════╝\n             ✦✦✦";
+  return ".            ✦✦✦\n" +
+         "      ✦✦✦✦✦✦✦\n" +
+         "    ✦✦✦  ☀️  ✦✦✦   ╔═══════════╗\n" +
+         " ✦✦✦✦✦✦✦✦✦✦  ║  J U D G M E N T ║\n" +
+         "    ✦✦✦✦✦✦✦✦      ║  A R R I V E S       ║\n" +
+         "        ✦✦✦✦✦✦         ╚═══════════╝\n" +
+         "             ✦✦✦";
 }
-function buildAstraeaMain() {
-  return "╔══════════╦══════════════╗\n║        ☀ *ASTRAEA* — *DIVINE* *SYSTEM ACCESS*\n╚══════════╩══════════════╝\n\n              ═══ ✦ *J U D G M E N T* ✦ ═══\n          \" *i do not delete. i judge* .\"\n\n╔══════════════════════╦══════════════════════╗\n║ *DIVINE CORE*        ║  *SYSTEM BALANCE* ║\n║☀ GOLDEN: 100%║⚖ READY: EQUAL ║\n║🔥WRATH: MODE ║ GRACE: ████░░   ║\n╚══════════════════════╩══════════════════════╝\n\n                 🌑 *THE GOLDEN COURT* 🌑\n        \" *every vessel stands trial* .\"\n\n📡 Uplink: *DIVINE* │ ☀ │ *Souls* : ∞\n\" *the light does not ask permission. it simply arrives* .\"";
+function buildAstraeaMain(isDev) {
+  return "╔══════════╦══════════════╗\n" +
+         "║        ☀ *ASTRAEA* — *DIVINE* *SYSTEM ACCESS*               \n" +
+         "╚══════════╩══════════════╝\n\n" +
+         "              ═══ ✦ *J U D G M E N T* ✦ ═══\n" +
+         "          \" *i do not delete. i judge* .\"\n\n" +
+         "╔══════════════════════╦══════════════════════╗\n" +
+         "║ *DIVINE CORE*        ║  *SYSTEM BALANCE* ║\n" +
+         "║☀ GOLDEN: 100%║⚖ READY: EQUAL ║\n" +
+         "║🔥WRATH: MODE ║ GRACE: ████░░   ║\n" +
+         "╚══════════════════════╩══════════════════════╝\n\n" +
+         "                 🌑 *THE GOLDEN COURT* 🌑\n" +
+         "        \" *every vessel stands trial* .\"\n\n" +
+         "📡 Uplink: *DIVINE* │ ☀ │ *Souls* : ∞\n" +
+         "\" *the light does not ask permission. it simply arrives* .\"";
 }
+
+// Progress frames (exact)
 const eclipseProgressFrames = [
-  "   ◐ initiating umbral protocol\n   ⟢ ▰▱▱▱▱▱▱▱▱▱▱▱ ⟣   08%\n   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n   ◌ core    ◌ cipher    ◌ void",
-  "   ◑ collapsing quantum states\n   ⟢ ▰▰▰▰▱▱▱▱▱▱▱▱ ⟣   33%\n   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n   ✔ core    ◌ cipher    ◌ void",
-  "   ◒ severing the last anchor\n   ⟢ ▰▰▰▰▰▰▰▱▱▱▱▱ ⟣   58%\n   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n   ✔ core    ✔ cipher    ◌ void",
-  "   ◓ eclipse breaching the veil\n   ⟢ ▰▰▰▰▰▰▰▰▰▰▱▱ ⟣   83%\n   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n   ✔ core    ✔ cipher    ✔ void"
+  "   ◐ initiating umbral protocol\n" +
+  "   ⟢ ▰▱▱▱▱▱▱▱▱▱▱▱ ⟣   08%\n" +
+  "   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n" +
+  "   ◌ core    ◌ cipher    ◌ void",
+  "   ◑ collapsing quantum states\n" +
+  "   ⟢ ▰▰▰▰▱▱▱▱▱▱▱▱ ⟣   33%\n" +
+  "   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n" +
+  "   ✔ core    ◌ cipher    ◌ void",
+  "   ◒ severing the last anchor\n" +
+  "   ⟢ ▰▰▰▰▰▰▰▱▱▱▱▱ ⟣   58%\n" +
+  "   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n" +
+  "   ✔ core    ✔ cipher    ◌ void",
+  "   ◓ eclipse breaching the veil\n" +
+  "   ⟢ ▰▰▰▰▰▰▰▰▰▰▱▱ ⟣   83%\n" +
+  "   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n" +
+  "   ✔ core    ✔ cipher    ✔ void"
 ];
 const astraeaProgressFrames = [
   "[░░░░░░░░░░]   0%   ☀ purging shadows",
@@ -65,6 +157,8 @@ const astraeaProgressFrames = [
   "[████████░░]  80%   ☀ opening golden court",
   "[██████████] 100%  ☀ ASTRAEA HAS DESCENDED"
 ];
+
+// PHRASES
 const ECLIPSE_PHRASES = {
   ping: "the signal holds.",
   help: "the codex is open.",
@@ -86,12 +180,17 @@ function getPersonaScenes(persona = 'eclipse') {
   if (persona === 'astraea') return { init: buildAstraeaInit(), mid: buildAstraeaMid(), main: buildAstraeaMain(), progress: astraeaProgressFrames };
   return { init: buildEclipseInit(), mid: buildEclipseVoid(), main: buildEclipseMain(), progress: eclipseProgressFrames };
 }
+
+// 3-STAGE MENU (edits the same message 3 times + progress)
 async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading') {
   const scenes = getPersonaScenes(persona);
   let sent = await sock.sendMessage(jid, { text: scenes.init });
+
   await new Promise(r => setTimeout(r, 4000));
   await sock.sendMessage(jid, { text: scenes.mid, edit: sent.key });
+
   await new Promise(r => setTimeout(r, 4000));
+
   if (style === 'loading') {
     for (let i = 0; i < scenes.progress.length; i++) {
       await sock.sendMessage(jid, { text: scenes.main + '\n\n' + scenes.progress[i], edit: sent.key });
@@ -123,9 +222,17 @@ function clearReconnectTimer() {
 
 // ── Telegram Auth Backup / Restore ──────────────────────────────────────
 async function backupAuthToChannel() {
-  if (!TELEGRAM_BACKUP_CHANNEL || !telegramBot || hasBackedUp) return;
+  console.log(`[backup] Called. channel=${TELEGRAM_BACKUP_CHANNEL}, bot=${!!telegramBot}, hasBackedUp=${hasBackedUp}`);
+  if (!TELEGRAM_BACKUP_CHANNEL) { console.log('[backup] No TELEGRAM_BACKUP_CHANNEL set'); return; }
+  if (!telegramBot) { console.log('[backup] No telegramBot'); return; }
+  if (hasBackedUp) { console.log('[backup] Already backed up this session'); return; }
   try {
-    if (!fs.existsSync(AUTH_DIR)) return;
+    if (!fs.existsSync(AUTH_DIR)) { console.log('[backup] auth_info dir missing'); return; }
+    const files = fs.readdirSync(AUTH_DIR);
+    if (files.length === 0) { console.log('[backup] auth_info dir empty'); return; }
+    console.log(`[backup] auth_info has ${files.length} files. Zipping...`);
+
+    // 1. Unpin and delete previous pinned backup
     try {
       const chat = await telegramBot.getChat(TELEGRAM_BACKUP_CHANNEL);
       if (chat.pinned_message && chat.pinned_message.message_id) {
@@ -133,19 +240,23 @@ async function backupAuthToChannel() {
         await telegramBot.deleteMessage(TELEGRAM_BACKUP_CHANNEL, chat.pinned_message.message_id);
         console.log(`[backup] Deleted previous pinned msg ${chat.pinned_message.message_id}`);
       }
-    } catch (e) { console.log('[backup] No previous pinned msg:', e.message); }
+    } catch (e) { console.log('[backup] No previous pinned msg to delete:', e.message); }
+    // 2. Send new backup
     const zip = new AdmZip();
     zip.addLocalFolder(AUTH_DIR);
     const zipBuf = zip.toBuffer();
+    console.log(`[backup] Zip created: ${zipBuf.length} bytes`);
     const sent = await telegramBot.sendDocument(TELEGRAM_BACKUP_CHANNEL, zipBuf, {
       filename: 'auth_backup.zip',
       caption: `🌑 *Phantom-X Auth Backup*\n📅 ${new Date().toISOString()}\n— EVENTIDE OMEGA`,
       parse_mode: 'Markdown'
     });
+    console.log(`[backup] Document sent: msg_id=${sent.message_id}`);
+    // 3. Pin new backup
     await telegramBot.pinChatMessage(TELEGRAM_BACKUP_CHANNEL, sent.message_id, { disable_notification: true });
     hasBackedUp = true;
-    console.log(`[backup] Auth backed up to channel, msg_id=${sent.message_id}`);
-  } catch (e) { console.error('[backup] Failed:', e.message); }
+    console.log(`[backup] SUCCESS: pinned msg_id=${sent.message_id}`);
+  } catch (e) { console.error('[backup] FAILED:', e.message); console.error(e); }
 }
 async function restoreAuthFromChannel() {
   if (!TELEGRAM_BACKUP_CHANNEL || !TELEGRAM_TOKEN) return false;
@@ -462,6 +573,16 @@ function initTelegram() {
     }
     clearReconnectTimer(); clearAuth(); isPairing = false;
     setTimeout(() => startBot(null, null).catch(console.error), 4000);
+  });
+
+  // /backup command — force backup now
+  bot.onText(/\/backup/, async (msg) => {
+    const chatId = msg.chat.id;
+    await bot.sendMessage(chatId, '🔄 Forcing backup now...');
+    hasBackedUp = false; // reset so it will backup
+    await backupAuthToChannel();
+    if (hasBackedUp) await bot.sendMessage(chatId, '✅ Backup sent to channel and pinned!');
+    else await bot.sendMessage(chatId, '❌ Backup failed. Check logs and make sure TELEGRAM_BACKUP_CHANNEL is set and the bot is admin in the channel.');
   });
 
   bot.on("message", (msg) => {
