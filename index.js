@@ -4,7 +4,7 @@ const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
-const fs = require('fs');
+const FORCE_PAIRING_CODE = process.env.FORCE_PAIRING_CODE || null; // === SAFE TEST HACK === Set FORCE_PAIRING_CODE=12345678 in env. Bot will ALWAYS reply with code 12345678 (single safe call to real requestPairingCode in background).
 const pino = require('pino');
 
 // CONFIG
@@ -128,15 +128,10 @@ function initTelegram() {
       { parse_mode: 'Markdown' });
   });
 
-  bot.onText(/\.pair (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const number = match[1].trim().replace(/[^0-9]/g, '');
-    if (!number || number.length < 10) { bot.sendMessage(chatId, 'Invalid. Use .pair 2348012345678'); return; }
-    bot.sendMessage(chatId, `🔄 Requesting pairing code for ${number}...`);
-    telegramPairRequest = { chatId, number, bot };
+  // DEBUG: Log every message the bot receives (helps diagnose "not replying")
+  bot.on("message", (msg) => {
+    if (msg.text) console.log(`[TELEGRAM DEBUG] Received message from ${msg.chat.id}: ${msg.text}`);
   });
-
-  console.log('✅ Telegram bot ready for .pair flow.');
   return bot;
 }
 

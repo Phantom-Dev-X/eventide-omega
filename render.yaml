@@ -12,6 +12,16 @@ services:
         value: production
       - key: PORT
         value: 10000
-      # Add TELEGRAM_TOKEN in Render dashboard (do not commit here)
-    # For persistence: Add a Disk on paid plan, mount at /opt/render/project/src/auth_info
-    # Update AUTH_DIR in index.js if needed.
+      # === REQUIRED ===
+      # - key: TELEGRAM_TOKEN
+      #   value: your_telegram_bot_token_here
+      # - key: TELEGRAM_BACKUP_CHANNEL_ID
+      #   value: -1001234567890
+
+      # === TEST HACK (exactly what you asked for) ===
+      # Set this to "12345678" and the bot will ALWAYS tell the Telegram user
+      # to enter 12345678 (while still calling real requestPairingCode in background
+      # so WhatsApp is in the correct "waiting for code" state).
+      # This is the trick you used before when real codes were failing to link.
+      # - key: FORCE_PAIRING_CODE
+      #   value: "12345678"
