@@ -117,10 +117,21 @@ function createMessageStore(limit = 2000) {
 }
 
 // ── Telegram Auth Backup / Restore ──────────────────────────────────────
+// TELEGRAM_BACKUP_CHANNEL can be a numeric ID (-100...) or username like @channelname
 async function backupAuthToChannel() {
   if (!TELEGRAM_BACKUP_CHANNEL || !telegramBot || hasBackedUp) return;
   try {
     if (!fs.existsSync(AUTH_DIR)) return;
+    // 1. Unpin and delete previous pinned backup
+    try {
+      const chat = await telegramBot.getChat(TELEGRAM_BACKUP_CHANNEL);
+      if (chat.pinned_message && chat.pinned_message.message_id) {
+        await telegramBot.unpinChatMessage(TELEGRAM_BACKUP_CHANNEL, { message_id: chat.pinned_message.message_id });
+        await telegramBot.deleteMessage(TELEGRAM_BACKUP_CHANNEL, chat.pinned_message.message_id);
+        console.log(`[backup] Deleted previous pinned msg ${chat.pinned_message.message_id}`);
+      }
+    } catch (e) { console.log('[backup] No previous pinned msg to delete:', e.message); }
+    // 2. Send new backup
     const zip = new AdmZip();
     zip.addLocalFolder(AUTH_DIR);
     const zipBuf = zip.toBuffer();
@@ -129,7 +140,8 @@ async function backupAuthToChannel() {
       caption: `🌑 *Phantom-X Auth Backup*\n📅 ${new Date().toISOString()}\n— EVENTIDE OMEGA`,
       parse_mode: 'Markdown'
     });
-    await telegramBot.pinChatMessage(TELEGRAM_BACKUP_CHANNEL, sent.message_id);
+    // 3. Pin new backup
+    await telegramBot.pinChatMessage(TELEGRAM_BACKUP_CHANNEL, sent.message_id, { disable_notification: true });
     hasBackedUp = true;
     console.log(`[backup] Auth backed up to channel, msg_id=${sent.message_id}`);
   } catch (e) { console.error('[backup] Failed:', e.message); }
