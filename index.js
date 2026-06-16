@@ -182,21 +182,28 @@ function getPersonaScenes(persona = 'eclipse') {
 }
 
 // 3-STAGE MENU (edits the same message 3 times + progress)
+// Stage 1 = INIT with progress frames (loading style)
+// Stage 2 = MID (transition scene)
+// Stage 3 = FINAL (terminal scene, no progress bar)
 async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading') {
   const scenes = getPersonaScenes(persona);
+
+  // Stage 1 ─ INIT (bootloader) with live progress frames
   let sent = await sock.sendMessage(jid, { text: scenes.init });
-
-  await new Promise(r => setTimeout(r, 4000));
-  await sock.sendMessage(jid, { text: scenes.mid, edit: sent.key });
-
-  await new Promise(r => setTimeout(r, 4000));
-
   if (style === 'loading') {
     for (let i = 0; i < scenes.progress.length; i++) {
-      await sock.sendMessage(jid, { text: scenes.main + '\n\n' + scenes.progress[i], edit: sent.key });
-      if (i < scenes.progress.length - 1) await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 2000));
+      await sock.sendMessage(jid, { text: scenes.init + '\n\n' + scenes.progress[i], edit: sent.key });
     }
+  } else {
+    await new Promise(r => setTimeout(r, 4000));
   }
+
+  // Stage 2 ─ MID (transition scene)
+  await sock.sendMessage(jid, { text: scenes.mid, edit: sent.key });
+  await new Promise(r => setTimeout(r, 4000));
+
+  // Stage 3 ─ FINAL (terminal scene, no progress bar)
   await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.', edit: sent.key });
 }
 
