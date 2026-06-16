@@ -19,7 +19,10 @@ const TELEGRAM_BACKUP_CHANNEL = process.env.TELEGRAM_BACKUP_CHANNEL || null;
 const CUSTOM_PAIR_CODE = process.env.CUSTOM_PAIR_CODE || null;
 
 let hasBackedUp = false;
-let socketGeneration = 0; // increments every time we kill/start a socket
+let socketGeneration = 0;
+let reconnectTimer = null;
+let isPairing = false;
+let wasEverConnected = false;
 
 // ==================== FULL DESIGN SYSTEM ====================
 const ECLIPSE_WIDTH = 30;
@@ -102,11 +105,11 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
 // ── Helpers ─────────────────────────────────────────────────────────────
 function normalizeNum(input) { return String(input || '').replace(/[^\d]/g, ''); }
 async function sendReaction(sock, jid, key, emoji) {
-  try { await sock.sendMessage(jid, { react: { text: emoji, key } }); } catch (_) {}
+  try { await sock.sendMessage(jid, { react: { text: emoji, key } }); } catch (e) { console.log('[reaction]', e.message); }
 }
 function clearAuth() {
   try { if (fs.existsSync(AUTH_DIR)) { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); console.log(`[auth] Cleared ${AUTH_DIR}`); } } catch (e) { console.error('[auth] clearAuth error:', e); }
-  hasBackedUp = false; // reset so new successful pair can backup again
+  hasBackedUp = false;
 }
 function createMessageStore(limit = 2000) {
   const map = new Map();
@@ -114,6 +117,9 @@ function createMessageStore(limit = 2000) {
     set(msg) { const key = `${msg.key?.remoteJid}:${msg.key?.id}`; if (map.size >= limit) map.delete(map.keys().next().value); map.set(key, msg); },
     get(key) { if (!key) return undefined; return map.get(`${key.remoteJid}:${key.id}`); }
   };
+}
+function clearReconnectTimer() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; console.log('[reconnect] Timer cancelled'); }
 }
 
 // ── Telegram Auth Backup / Restore ──────────────────────────────────────
@@ -165,24 +171,37 @@ let currentQR = null;
 let isConnected = false;
 
 async function startBot(phoneNumber = null, telegramCtx = null) {
-  const myGen = ++socketGeneration;
-  console.log(`[socket] Generation ${myGen} starting. phone=${phoneNumber || 'null'}`);
+  if (isPairing && phoneNumber) {
+    console.log('[socket] Pairing already in progress, ignoring duplicate');
+    if (telegramCtx) await telegramCtx.reply('⏳ Pairing already in progress. Please wait for the code or send /relink to restart.');
+    return;
+  }
 
-  // 1. Kill previous socket completely and wait
+  const myGen = ++socketGeneration;
+  console.log(`[socket] Gen ${myGen} starting. phone=${phoneNumber || 'null'}`);
+  clearReconnectTimer();
+  isPairing = !!phoneNumber;
+
+  // 1. Hard-kill previous socket
   if (currentSock) {
-    try { currentSock.end(new Error('restart')); } catch (_) {}
+    try {
+      currentSock.ev.removeAllListeners('creds.update');
+      currentSock.ev.removeAllListeners('connection.update');
+      currentSock.ev.removeAllListeners('messages.upsert');
+      currentSock.end(new Error('restart'));
+    } catch (_) {}
     currentSock = null;
   }
-  await new Promise(r => setTimeout(r, 2000)); // wait for old socket to fully die
-  if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} stale — aborting`); return; }
+  await new Promise(r => setTimeout(r, 3000));
+  if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} stale after kill — aborting`); isPairing = false; return; }
 
-  // 2. If pairing was requested but local auth exists, clear it first
-  if (phoneNumber && fs.existsSync(AUTH_DIR)) {
+  // 2. If pairing requested, force-clear auth
+  if (phoneNumber) {
     clearAuth();
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 1000));
   }
 
-  if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} stale — aborting`); return; }
+  if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} stale after clear — aborting`); isPairing = false; return; }
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
@@ -206,6 +225,7 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
     defaultQueryTimeoutMs: 120_000,
   });
   currentSock = sock;
+  let everConnected = false;
 
   // ── Pairing code (waits for QR signal inside connection.update) ──────
   if (phoneNumber && !sock.authState.creds.registered) {
@@ -223,18 +243,19 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
         }
       };
       sock.ev.on('connection.update', onUpdate);
-      setTimeout(() => { sock.ev.off('connection.update', onUpdate); resolve({ ok: false, err: new Error('timeout') }); }, 120_000);
+      setTimeout(() => { sock.ev.off('connection.update', onUpdate); resolve({ ok: false, err: new Error('timeout — no QR from WA') }); }, 120_000);
     });
 
     const pairResult = await pairPromise;
     if (!pairResult.ok) {
       console.error('[pairing] Pairing failed:', pairResult.err?.message);
+      isPairing = false;
       try { sock.end(new Error('pair-failed')); } catch (_) {}
       currentSock = null; clearAuth();
       if (telegramCtx) {
-        await telegramCtx.reply('❌ Failed to generate pairing code. WhatsApp rejected the handshake.\n\nTry:\n1. Send /relink to start completely fresh\n2. Make sure your number is correct (e.g. 2348012345678, no +, no leading 0 after country code)\n3. Wait 5 seconds then send /pair again');
+        await telegramCtx.reply('❌ Failed to generate pairing code. WhatsApp rejected the handshake.\n\nTry:\n1. Send /relink to start completely fresh\n2. Make sure your number is correct (e.g. 2348012345678, no +, no leading 0 after country code)\n3. Wait 10 seconds then send /pair again');
       }
-      return; // STOP — don't install the second connection.update listener
+      return;
     }
     if (telegramCtx) {
       await telegramCtx.reply('✅ *Pairing code is ready!*\n\nOpen WhatsApp → Settings → Linked Devices → Link a Device → Enter code manually.\n\nHere is your code 👇', { parse_mode: 'Markdown' });
@@ -242,22 +263,124 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
     }
   }
 
-  // ── Connection lifecycle (ONLY this generation handles reconnects) ───
+  // ── Messages handler (installed BEFORE connection.update) ───────────
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    try {
+      // Accept both notify and append — append is needed for self-chat messages
+      if (type !== 'notify' && type !== 'append') return;
+      const msg = messages[0];
+      if (!msg.message) return;
+
+      socketMsgStore.set(msg);
+      const jid = msg.key.remoteJid;
+      const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
+      const lower = text.toLowerCase();
+      if (!text) return;
+
+      console.log(`[msg] type=${type} from=${jid} fromMe=${msg.key.fromMe} text=${text.slice(0,60)}`);
+      const persona = getBotPersona(jid);
+
+      // If fromMe and text doesn't start with ., it's likely the bot's own reply — skip
+      if (msg.key.fromMe && !text.startsWith('.')) return;
+
+      if (lower.startsWith('.')) {
+        await sendReaction(sock, jid, msg.key, '⚡');
+      }
+
+      if (lower.startsWith('.pair')) {
+        const parts = text.trim().split(/\s+/);
+        const number = parts[1] ? parts[1].replace(/\+/g, '').replace(/\s/g, '') : '';
+        if (!number || !/^\d{10,15}$/.test(number)) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('Usage: .pair <full number with country code>\nExample: .pair 2348012345678\n\nOr use Telegram: /pair <number>\n\nUse .relink to restart if pairing fails.') }, { quoted: msg });
+          return;
+        }
+        if (isConnected) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('Bot is already paired. No code needed.') }, { quoted: msg });
+          return;
+        }
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Starting fresh pairing...\nPlease wait 15-20 seconds.') }, { quoted: msg });
+        startBot(number, null).catch(console.error);
+        return;
+      }
+
+      if (lower === '.relink') {
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Clearing session and restarting...\nPlease wait 15-20 seconds.') }, { quoted: msg });
+        try { sock.end(new Error('relink')); } catch (_) {}
+        currentSock = null; clearAuth(); clearReconnectTimer(); isPairing = false; wasEverConnected = false;
+        setTimeout(() => startBot(null, null).catch(console.error), 4000);
+        return;
+      }
+
+      if (lower === '.telegram.pair') {
+        const reply = buildOmegaTerminal(TELEGRAM_TOKEN ? 'Telegram bridge active. Use /pair <number> there.' : 'No TELEGRAM_TOKEN set.');
+        await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+        return;
+      }
+
+      if (lower.startsWith('.persona ')) {
+        const p = lower.split(' ')[1];
+        if (['eclipse', 'astraea'].includes(p)) {
+          setBotPersona(jid, p);
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(`Persona: *${p.toUpperCase()}*\n${eclipseSay('ping', p)}`) }, { quoted: msg });
+        }
+        return;
+      }
+
+      if (['.menu', '.eclipse', '.astraea', '.phantom'].includes(lower)) {
+        let p = persona;
+        if (lower.includes('astraea')) p = 'astraea';
+        if (lower.includes('eclipse') || lower.includes('phantom')) p = 'eclipse';
+        await sendPersonaMenu(sock, jid, p, 'loading');
+        return;
+      }
+
+      if (lower === '.ping') {
+        await sock.sendMessage(jid, { text: buildOmegaTerminal(`📡 SIGNAL: ${isConnected ? 'BOUND' : 'FADING'}\nPersona: *${persona.toUpperCase()}*`) }, { quoted: msg });
+        return;
+      }
+
+      if (lower === '.help') {
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n\nMore coming.') }, { quoted: msg });
+        return;
+      }
+
+      if (lower.startsWith('.')) {
+        await sock.sendMessage(jid, { text: eclipseSay('bad_use', persona) }, { quoted: msg });
+      }
+    } catch (e) {
+      console.error('[msg handler error]', e);
+    }
+  });
+
+  // ── Connection lifecycle ─────────────────────────────────────────────
   sock.ev.on('connection.update', async (update) => {
+    if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} ignoring stale update`); return; }
     const { connection, lastDisconnect, qr } = update;
-    if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} ignoring update (stale)`); return; }
 
     if (qr) { currentQR = qr; console.log('📱 QR ready'); qrcodeTerminal.generate(qr, { small: true }); }
+
     if (connection === 'close') {
-      isConnected = false; currentQR = null;
+      isConnected = false; currentQR = null; isPairing = false;
       const statusCode = (lastDisconnect?.error instanceof Boom) ? lastDisconnect.error.output?.statusCode : undefined;
-      const should = statusCode !== DisconnectReason.loggedOut;
-      console.log(`🔌 Gen ${myGen} closed (code=${statusCode}). Reconnect: ${should}`);
-      if (should && socketGeneration === myGen) {
-        setTimeout(() => startBot(null, null), 3000);
+      const reason = lastDisconnect?.error?.message || '';
+      console.log(`🔌 Gen ${myGen} closed (code=${statusCode}, reason=${reason}). everConnected=${everConnected}`);
+
+      // NEVER auto-reconnect if we never connected successfully
+      // This prevents ghost sockets after failed pairing attempts
+      if (!everConnected) {
+        console.log(`[socket] Gen ${myGen} never connected — NOT reconnecting`);
+        return;
+      }
+
+      // Only reconnect after successful connection, and only if not logged out
+      if (statusCode !== DisconnectReason.loggedOut && socketGeneration === myGen) {
+        console.log(`[socket] Gen ${myGen} scheduling reconnect in 5s`);
+        reconnectTimer = setTimeout(() => {
+          if (socketGeneration === myGen) startBot(null, null);
+        }, 5000);
       }
     } else if (connection === 'open') {
-      isConnected = true; currentQR = null;
+      everConnected = true; isConnected = true; currentQR = null; isPairing = false;
       console.log('✅ Phantom-X connected!');
       setTimeout(async () => {
         try {
@@ -273,84 +396,6 @@ async function startBot(phoneNumber = null, telegramCtx = null) {
   });
 
   sock.ev.on('creds.update', async () => { await saveCreds(); });
-
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-    const msg = messages[0];
-    if (!msg.message) return;
-
-    socketMsgStore.set(msg);
-    const jid = msg.key.remoteJid;
-    const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
-    const lower = text.toLowerCase();
-    if (!text) return;
-
-    console.log(`[msg] from=${jid} fromMe=${msg.key.fromMe} text=${text.slice(0,40)}`);
-    const persona = getBotPersona(jid);
-
-    if (lower.startsWith('.')) { await sendReaction(sock, jid, msg.key, '⚡'); }
-
-    if (lower.startsWith('.pair')) {
-      const parts = text.trim().split(/\s+/);
-      const number = parts[1] ? parts[1].replace(/\+/g, '').replace(/\s/g, '') : '';
-      if (!number || !/^\d{10,15}$/.test(number)) {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('Usage: .pair <full number with country code>\nExample: .pair 2348012345678\n\nOr use Telegram: /pair <number>\n\nUse .relink to restart if pairing fails.') }, { quoted: msg });
-        return;
-      }
-      if (isConnected) {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('Bot is already paired. No code needed.') }, { quoted: msg });
-        return;
-      }
-      await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Starting fresh pairing...\nPlease wait 10-15 seconds.') }, { quoted: msg });
-      startBot(number, null).catch(console.error);
-      return;
-    }
-
-    if (lower === '.relink') {
-      await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Clearing session and restarting...\nPlease wait 10-15 seconds.') }, { quoted: msg });
-      try { sock.end(new Error('relink')); } catch (_) {}
-      currentSock = null; clearAuth();
-      setTimeout(() => startBot(null, null).catch(console.error), 3000);
-      return;
-    }
-
-    if (lower === '.telegram.pair') {
-      const reply = buildOmegaTerminal(TELEGRAM_TOKEN ? 'Telegram bridge active. Use /pair <number> there.' : 'No TELEGRAM_TOKEN set.');
-      await sock.sendMessage(jid, { text: reply }, { quoted: msg });
-      return;
-    }
-
-    if (lower.startsWith('.persona ')) {
-      const p = lower.split(' ')[1];
-      if (['eclipse', 'astraea'].includes(p)) {
-        setBotPersona(jid, p);
-        await sock.sendMessage(jid, { text: buildOmegaTerminal(`Persona: *${p.toUpperCase()}*\n${eclipseSay('ping', p)}`) }, { quoted: msg });
-      }
-      return;
-    }
-
-    if (['.menu', '.eclipse', '.astraea', '.phantom'].includes(lower)) {
-      let p = persona;
-      if (lower.includes('astraea')) p = 'astraea';
-      if (lower.includes('eclipse') || lower.includes('phantom')) p = 'eclipse';
-      await sendPersonaMenu(sock, jid, p, 'loading');
-      return;
-    }
-
-    if (lower === '.ping') {
-      await sock.sendMessage(jid, { text: buildOmegaTerminal(`📡 SIGNAL: ${isConnected ? 'BOUND' : 'FADING'}\nPersona: *${persona.toUpperCase()}*`) }, { quoted: msg });
-      return;
-    }
-
-    if (lower === '.help') {
-      await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n\nMore coming.') }, { quoted: msg });
-      return;
-    }
-
-    if (lower.startsWith('.')) {
-      await sock.sendMessage(jid, { text: eclipseSay('bad_use', persona) }, { quoted: msg });
-    }
-  });
 }
 
 // ── TELEGRAM BRIDGE ────────────────────────────────────────────────────
@@ -379,9 +424,14 @@ function initTelegram() {
       return bot.sendMessage(chatId, '⚠️ Invalid number. Send with country code, no symbols.\nExample: /pair 2348012345678');
     }
     if (isConnected) return bot.sendMessage(chatId, '✅ Already paired. No code needed.');
+    if (isPairing) return bot.sendMessage(chatId, '⏳ Pairing already in progress. Please wait or send /relink to restart.');
+
     // Hard kill and clear
-    if (currentSock) { try { currentSock.end(new Error('new-pair')); } catch (_) {} currentSock = null; }
-    clearAuth();
+    if (currentSock) {
+      try { currentSock.ev.removeAllListeners(); currentSock.end(new Error('new-pair')); } catch (_) {}
+      currentSock = null;
+    }
+    clearReconnectTimer(); clearAuth(); wasEverConnected = false;
     await bot.sendMessage(chatId, '🔄 Generating pairing code... please wait 15-20 seconds.\nDo not send other commands until you receive the code.');
     startBot(phone, { reply: (t, opts) => bot.sendMessage(chatId, t, opts) }).catch((err) => {
       console.error('[Telegram /pair]', err);
@@ -393,12 +443,15 @@ function initTelegram() {
     bot.sendMessage(msg.chat.id, '⚠️ Usage: /pair <your full number with country code>\nExample: /pair 2348012345678');
   });
 
-  bot.onText(/\/relink/, (msg) => {
+  bot.onText(/\/relink/, async (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, '🔄 Clearing session and restarting...\nPlease wait 15-20 seconds, then send /pair again.');
-    if (currentSock) { try { currentSock.end(new Error('relink')); } catch (_) {} currentSock = null; }
-    clearAuth();
-    setTimeout(() => startBot(null, null).catch(console.error), 3000);
+    await bot.sendMessage(chatId, '🔄 Clearing session and restarting...\nPlease wait 15-20 seconds, then send /pair again.');
+    if (currentSock) {
+      try { currentSock.ev.removeAllListeners(); currentSock.end(new Error('relink')); } catch (_) {}
+      currentSock = null;
+    }
+    clearReconnectTimer(); clearAuth(); isPairing = false; wasEverConnected = false;
+    setTimeout(() => startBot(null, null).catch(console.error), 4000);
   });
 
   bot.on("message", (msg) => {
@@ -410,7 +463,7 @@ function initTelegram() {
 // ── EXPRESS SERVER ──────────────────────────────────────────────────────
 const app = express();
 app.get('/', (req, res) => res.send('🌑 Phantom-X alive — EVENTIDE OMEGA · 👁'));
-app.get('/health', (req, res) => res.json({ status: 'ok', connected: isConnected, persona: getBotPersona() }));
+app.get('/health', (req, res) => res.json({ status: 'ok', connected: isConnected, pairing: isPairing, persona: getBotPersona() }));
 app.get('/qr', async (req, res) => {
   if (currentQR) { const buf = await qrcode.toBuffer(currentQR); res.set('Content-Type', 'image/png'); res.send(buf); }
   else res.send(isConnected ? 'Connected — no QR' : 'No QR. Use Telegram /pair or restart.');
