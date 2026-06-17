@@ -22,6 +22,8 @@ let socketGeneration = 0;
 let reconnectTimer = null;
 let isPairing = false;
 let botStartTime = Date.now();
+let successfulPairings = 0; // count of successful connections
+const SESSION_FILE = 'sessions.json';
 
 // ==================== FULL DESIGN SYSTEM (EXACT FROM DESIGN_SYSTEM.md) ====================
 const ECLIPSE_WIDTH = 30;
@@ -169,6 +171,9 @@ function eclipseSay(key, persona = 'eclipse') {
   let phrase = ECLIPSE_PHRASES[key] || "the void answers.";
   return persona === 'astraea' ? phrase.toUpperCase() : phrase.toLowerCase();
 }
+
+function loadSessions() { try { if (fs.existsSync(SESSION_FILE)) { const d = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8')); successfulPairings = d.successfulPairings || 0; } } catch {} }
+function saveSessions() { try { fs.writeFileSync(SESSION_FILE, JSON.stringify({ successfulPairings, lastUpdated: new Date().toISOString() }, null, 2)); } catch {} }
 
 // PERSONA SYSTEM
 let botPersonas = {};
@@ -554,6 +559,8 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
       }
     } else if (connection === 'open') {
       everConnected = true; isConnected = true; currentQR = null; isPairing = false;
+      successfulPairings++;
+      saveSessions();
       console.log('✅ Phantom-X connected! origin=' + connectOrigin);
       setTimeout(async () => {
         try {
@@ -636,7 +643,7 @@ async function initTelegram() {
 
   bot.onText(/\/help/, (msg) => {
     bot.sendMessage(msg.chat.id,
-      `📖 *TELEGRAM COMMANDS*\n\n/start — Welcome message\n/pair <number> — Request pairing code\n/relink — Clear session and restart\n/backup — Save current session to channel\n/restore — Restore session from channel backup\n\nExample: /pair 2348012345678\n\n— *EVENTIDE OMEGA* · 👁`,
+      `📖 *TELEGRAM COMMANDS*\n\n/start — Welcome message\n/pair <number> — Request pairing code\n/relink — Clear session and restart\n/backup — Save current session to channel\n/restore — Restore session from channel backup\n/sessions — Check connection status\n\nExample: /pair 2348012345678\n\n— *EVENTIDE OMEGA* · 👁`,
       { parse_mode: 'Markdown' });
   });
 
@@ -691,6 +698,29 @@ async function initTelegram() {
   });
 
   // /restore command — pull pinned backup from channel and reconnect
+  // /sessions — show connection status
+  bot.onText(/\/sessions/, async (msg) => {
+    const chatId = msg.chat.id;
+    const uptime = formatUptime(Date.now() - botStartTime);
+    const authExists = fs.existsSync(AUTH_DIR) && fs.readdirSync(AUTH_DIR).length > 0;
+    const botPhone = (currentSock && currentSock.user?.id) ? currentSock.user.id.split(':')[0].split('@')[0] : 'N/A';
+    const lines = [
+      `📱 *SESSION STATUS*`,
+      ``,
+      `👥 Active Sessions: ${isConnected ? '1' : '0'}`,
+      `✅ Total Pairings: ${successfulPairings}`,
+      `📡 Connected: ${isConnected ? 'YES' : 'NO'}`,
+      `🔗 Socket Gen: ${socketGeneration}`,
+      `⏱️ Uptime: ${uptime}`,
+      `🤖 Bot Number: ${botPhone}`,
+      `📁 Auth Files: ${authExists ? 'YES' : 'NO'}`,
+      `🔄 Pairing: ${isPairing ? 'IN PROGRESS' : 'IDLE'}`,
+      ``,
+      `— *EVENTIDE OMEGA* · 👁`
+    ];
+    await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
+  });
+
   bot.onText(/\/restore/, async (msg) => {
     const chatId = msg.chat.id;
     if (!TELEGRAM_BACKUP_CHANNEL) {
@@ -736,6 +766,7 @@ app.listen(PORT, () => console.log(`🌐 Server on ${PORT}`));
 async function main() {
   console.log('🚀 Phantom-X starting...');
   loadPersonas();
+  loadSessions();
   telegramBot = await initTelegram();
 
   const authExists = fs.existsSync(AUTH_DIR) && fs.readdirSync(AUTH_DIR).length > 0;
