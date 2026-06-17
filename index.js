@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
 const TelegramBot = require('node-telegram-bot-api');
@@ -190,7 +190,7 @@ function getPersonaScenes(persona = 'eclipse') {
 // Stage 1 = INIT with progress frames (loading style)
 // Stage 2 = MID (transition scene)
 // Stage 3 = FINAL (terminal scene, no progress bar)
-async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading') {
+async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading', isDev = false) {
   const scenes = getPersonaScenes(persona);
 
   // Stage 1 ─ INIT (bootloader) with live progress frames
@@ -210,6 +210,124 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
 
   // Stage 3 ─ FINAL (terminal scene, no progress bar)
   await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.', edit: sent.key });
+
+  // Stage 4 ─ Send interactive list button for navigation
+  await new Promise(r => setTimeout(r, 1500));
+  await sendMenuList(sock, jid, sent, persona, isDev);
+}
+
+function isDevJid(jid) {
+  if (!process.env.DEV_NUMBER) return false;
+  const num = normalizeNum(jid.split('@')[0].split(':')[0]);
+  return num === normalizeNum(process.env.DEV_NUMBER);
+}
+
+async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = false) {
+  const body = buildOmegaTerminal(
+    `📖 *NAVIGATE THE VOID*\n\nChoose your path below:`
+  );
+  const footer = persona === 'astraea' ? '☀ ASTRAEA · DIVINE SYSTEM' : '🌑 ⟢ NAVIGATE THE VOID ⟣ 🌑';
+  const rows = [
+    { title: '👑 Owner Menu', description: 'Commands for the sovereign', id: 'menu_owner' },
+    { title: '👥 Group Menu', description: 'Group management & protection', id: 'menu_group' },
+    { title: '🎮 Fun Menu', description: 'Games, jokes & entertainment', id: 'menu_fun' },
+    { title: '🐞 Bug Menu', description: 'Bug reports, shields & tools', id: 'menu_bug' },
+  ];
+  if (isDev) {
+    rows.push({ title: '🔴 Architect Menu', description: 'The silent throne — dev only', id: 'menu_dev' });
+  }
+
+  try {
+    const msg = generateWAMessageFromContent(jid, {
+      viewOnceMessage: {
+        message: {
+          messageContextInfo: {
+            deviceListMetadataVersion: 2,
+            deviceListMetadata: {}
+          },
+          interactiveMessage: proto.Message.InteractiveMessage.create({
+            body: proto.Message.InteractiveMessage.Body.create({ text: body }),
+            footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
+            header: proto.Message.InteractiveMessage.Header.create({
+              title: '',
+              subtitle: '',
+              hasMediaAttachment: false
+            }),
+            nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+              buttons: [{
+                name: 'single_select',
+                buttonParamsJson: JSON.stringify({
+                  title: 'NAVIGATE THE VOID',
+                  sections: [{
+                    title: 'Choose Your Path',
+                    rows: rows
+                  }]
+                })
+              }]
+            })
+          })
+        }
+      }
+    }, { userJid: sock.user?.id, quoted: quotedMsg });
+
+    await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
+    console.log(`[menu] Interactive list sent to ${jid}`);
+  } catch (e) {
+    console.error('[menu] Failed to send interactive list:', e.message);
+    // Fallback: send plain text menu
+    const fallback = rows.map((r, i) => `   ${i + 1}. ${r.title} — ${r.description}`).join('\n');
+    await sock.sendMessage(jid, { text: buildOmegaTerminal(`📖 *NAVIGATE THE VOID*\n\n${fallback}\n\n_Reply with the number to select._`) }, { quoted: quotedMsg });
+  }
+}
+
+async function handleMenuButton(sock, jid, msg, buttonId) {
+  console.log(`[button] ${buttonId} from ${jid}`);
+  const isDev = isDevJid(jid);
+
+  if (buttonId === 'menu_owner') {
+    await sock.sendMessage(jid, { text: buildOmegaTerminal(
+      `   ╔══ *👑 OWNER MENU* ══╗\n\n` +
+      `   " *the sovereign does not ask.*\n     *the sovereign commands.* "\n\n` +
+      `   Commands are being prepared.\n   You will be notified when ready.`
+    ) }, { quoted: msg });
+    return;
+  }
+  if (buttonId === 'menu_group') {
+    await sock.sendMessage(jid, { text: buildOmegaTerminal(
+      `   ╔══ *🛡 GROUP MENU* ══╗\n\n` +
+      `   " *every group is a kingdom.*\n     *you decide how it is ruled.* "\n\n` +
+      `   Commands are being prepared.\n   You will be notified when ready.`
+    ) }, { quoted: msg });
+    return;
+  }
+  if (buttonId === 'menu_fun') {
+    await sock.sendMessage(jid, { text: buildOmegaTerminal(
+      `   ╔══ *🎮 FUN MENU* ══╗\n\n` +
+      `   " *the void also plays.*\n     *even darkness needs amusement.* "\n\n` +
+      `   Commands are being prepared.\n   You will be notified when ready.`
+    ) }, { quoted: msg });
+    return;
+  }
+  if (buttonId === 'menu_bug') {
+    await sock.sendMessage(jid, { text: buildOmegaTerminal(
+      `   ╔══ *🐞 BUG MENU* ══╗\n\n` +
+      `   " *the shield is forged.*\n     *the ward is raised.* "\n\n` +
+      `   Commands are being prepared.\n   You will be notified when ready.`
+    ) }, { quoted: msg });
+    return;
+  }
+  if (buttonId === 'menu_dev') {
+    if (!isDev) {
+      await sock.sendMessage(jid, { text: buildOmegaTerminal(`   🔒  *ACCESS_DENIED*\n\n   the throne does not open\n   for the uninvited.`) }, { quoted: msg });
+      return;
+    }
+    await sock.sendMessage(jid, { text: buildOmegaTerminal(
+      `   ╔══ *🔴 ARCHITECT MENU* ══╗\n\n` +
+      `   " *only the architect may*\n     *enter this chamber.* "\n\n` +
+      `   Commands are being prepared.\n   You will be notified when ready.`
+    ) }, { quoted: msg });
+    return;
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -460,7 +578,27 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         let p = persona;
         if (lower.includes('astraea')) p = 'astraea';
         if (lower.includes('eclipse') || lower.includes('phantom')) p = 'eclipse';
-        await sendPersonaMenu(sock, jid, p, 'loading');
+        const dev = isDevJid(jid);
+        await sendPersonaMenu(sock, jid, p, 'loading', dev);
+        return;
+      }
+
+      // Handle button / list / interactive responses
+      let buttonId = '';
+      if (msg.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
+        try {
+          const params = JSON.parse(msg.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
+          buttonId = params.id || '';
+        } catch (e) {}
+      }
+      if (!buttonId && msg.message?.listResponseMessage?.singleSelectReply?.selectedRowId) {
+        buttonId = msg.message.listResponseMessage.singleSelectReply.selectedRowId;
+      }
+      if (!buttonId && msg.message?.buttonsResponseMessage?.selectedButtonId) {
+        buttonId = msg.message.buttonsResponseMessage.selectedButtonId;
+      }
+      if (buttonId && buttonId.startsWith('menu_')) {
+        await handleMenuButton(sock, jid, msg, buttonId);
         return;
       }
 
