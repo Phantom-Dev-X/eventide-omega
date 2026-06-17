@@ -12,7 +12,7 @@ const pino = require('pino');
 // ── CONFIG ──────────────────────────────────────────────────────────────
 const AUTH_DIR = 'auth_info';
 const PERSONA_FILE = 'menu_theme.json';
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || null;
 const TELEGRAM_BACKUP_CHANNEL = process.env.TELEGRAM_BACKUP_CHANNEL || null;
 const CUSTOM_PAIR_CODE = process.env.CUSTOM_PAIR_CODE || null;
@@ -929,7 +929,7 @@ app.get('/qr', async (req, res) => {
   if (currentQR) { const buf = await qrcode.toBuffer(currentQR); res.set('Content-Type', 'image/png'); res.send(buf); }
   else res.send(isConnected ? 'Connected — no QR' : 'No QR. Use Telegram /pair or restart.');
 });
-app.listen(PORT, () => console.log(`🌐 Server on ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🌐 Server on ${PORT}`));
 
 // ── BOOT ───────────────────────────────────────────────────────────────
 async function main() {
