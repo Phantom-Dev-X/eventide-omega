@@ -381,13 +381,15 @@ async function backupAuthToChannel() {
     } catch (e) { console.log('[backup] No previous pinned msg to delete:', e.message); }
     // 2. Send new backup
     const zip = new AdmZip();
-    zip.addLocalFolder(AUTH_DIR);
+    zip.addLocalFolder(AUTH_DIR, AUTH_DIR); // preserves auth_info/ prefix inside zip so restore extracts to correct path
     const zipBuf = zip.toBuffer();
     console.log(`[backup] Zip created: ${zipBuf.length} bytes`);
     const sent = await telegramBot.sendDocument(TELEGRAM_BACKUP_CHANNEL, zipBuf, {
-      filename: 'auth_backup.zip',
       caption: `🌑 *Phantom-X Auth Backup*\n📅 ${new Date().toISOString()}\n— EVENTIDE OMEGA`,
       parse_mode: 'Markdown'
+    }, {
+      filename: 'auth_backup.zip',
+      contentType: 'application/zip'
     });
     console.log(`[backup] Document sent: msg_id=${sent.message_id}`);
     // 3. Pin new backup
