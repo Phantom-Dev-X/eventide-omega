@@ -1,6 +1,15 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+
+// Allow button-helper (which imports 'baileys') to find @whiskeysockets/baileys
+const Module = require('module');
+const _origResolve = Module._resolveFilename;
+Module._resolveFilename = function (request, ...rest) {
+  if (request === 'baileys') return _origResolve('@whiskeysockets/baileys', ...rest);
+  return _origResolve(request, ...rest);
+};
+
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
@@ -8,6 +17,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const AdmZip = require('adm-zip');
 const pino = require('pino');
+const { sendInteractiveMessage } = require('@ryuu-reinzz/button-helper');
 
 // ── CONFIG ──────────────────────────────────────────────────────────────
 const AUTH_DIR = 'auth_info';
@@ -268,52 +278,65 @@ async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = f
     rows.push({ title: '🔴 Architect Menu', description: 'The silent throne — dev only', id: 'menu_dev' });
   }
 
+  // Attempt 1: button-helper sendInteractiveMessage (handles proto encoding + nodes automatically)
   try {
-    const msg = generateWAMessageFromContent(jid, {
-      viewOnceMessage: {
-        message: {
-          messageContextInfo: {
-            deviceListMetadataVersion: 2,
-            deviceListMetadata: {}
-          },
-          interactiveMessage: {
-            body: { text: body },
-            footer: { text: footer },
-            header: { title: '', subtitle: '', hasMediaAttachment: false },
-            nativeFlowMessage: {
-              buttons: [{
-                name: 'single_select',
-                buttonParamsJson: JSON.stringify({
-                  title: 'NAVIGATE THE VOID',
-                  sections: [{
-                    title: 'Choose Your Path',
-                    rows: rows.map(r => ({
-                      header: '',
-                      title: r.title,
-                      description: r.description || '',
-                      id: r.id
-                    }))
-                  }]
-                })
-              }]
-            }
-          }
-        }
-      }
-    }, { userJid: sock.user?.id });
-
-    const isGroup = jid.endsWith('@g.us');
-    await sock.relayMessage(jid, msg.message, {
-      messageId: msg.key.id,
-      additionalNodes: buildEngagementNodes(isGroup),
+    await sendInteractiveMessage(sock, jid, {
+      text: body,
+      footer,
+      interactiveButtons: [{
+        name: 'single_select',
+        buttonParamsJson: JSON.stringify({
+          title: 'NAVIGATE THE VOID',
+          sections: [{
+            title: 'Choose Your Path',
+            rows: rows.map(r => ({
+              header: '',
+              title: r.title,
+              description: r.description || '',
+              id: r.id
+            }))
+          }]
+        })
+      }]
     });
-    console.log(`[menu] Interactive list sent to ${jid}`);
+    console.log(`[menu] Interactive list sent (button-helper) to ${jid}`);
+    return;
   } catch (e) {
-    console.error('[menu] Failed to send interactive list:', e.message);
-    // Fallback: send plain text menu
-    const fallback = rows.map((r, i) => `   ${i + 1}. ${r.title} — ${r.description}`).join('\n');
-    await sock.sendMessage(jid, { text: buildOmegaTerminal(`📖 *NAVIGATE THE VOID*\n\n${fallback}\n\n_Reply with the number to select._`) }, { quoted: quotedMsg });
+    console.error('[menu] button-helper attempt failed:', e.message);
   }
+
+  // Attempt 2: vanilla Baileys interactiveButtons via sendMessage
+  try {
+    await sock.sendMessage(jid, {
+      text: body,
+      footer,
+      interactiveButtons: [{
+        name: 'single_select',
+        buttonParamsJson: JSON.stringify({
+          title: 'NAVIGATE THE VOID',
+          sections: [{
+            title: 'Choose Your Path',
+            rows: rows.map(r => ({
+              title: r.title,
+              id: r.id,
+              description: r.description || ''
+            }))
+          }]
+        })
+      }]
+    });
+    console.log(`[menu] Interactive list sent (vanilla) to ${jid}`);
+    return;
+  } catch (e) {
+    console.error('[menu] vanilla attempt failed:', e.message);
+  }
+
+  // Attempt 3: plain numbered text (always works)
+  const fallback = rows.map((r, i) => `   *${i + 1}.* ${r.title} — ${r.description}`).join('\n');
+  await sock.sendMessage(jid, {
+    text: buildOmegaTerminal(`📖 *NAVIGATE THE VOID*\n\n${fallback}\n\n_Reply with the number to navigate._`)
+  });
+  console.log(`[menu] Fallback text menu sent to ${jid}`);
 }
 
 async function handleMenuButton(sock, jid, msg, buttonId) {
@@ -560,14 +583,26 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   // ── Messages handler (installed BEFORE connection.update) ───────────
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     try {
+      const msg = messages[0];
+      // RAW diagnostic — log everything before any filter
+      const rawKeys = msg?.message ? Object.keys(msg.message).join(',') : 'null';
+      console.log(`[upsert-raw] type=${type} jid=${msg?.key?.remoteJid} fromMe=${msg?.key?.fromMe} hasMsg=${!!msg?.message} keys=${rawKeys}`);
+
       // Accept both notify and append — append is needed for self-chat messages
       if (type !== 'notify' && type !== 'append') return;
-      const msg = messages[0];
       if (!msg.message) return;
 
       socketMsgStore.set(msg);
       const jid = msg.key.remoteJid;
-      const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
+      const text = (
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        msg.message.ephemeralMessage?.message?.conversation ||
+        msg.message.ephemeralMessage?.message?.extendedTextMessage?.text ||
+        msg.message.viewOnceMessage?.message?.conversation ||
+        msg.message.viewOnceMessage?.message?.extendedTextMessage?.text ||
+        ''
+      ).trim();
       const lower = text.toLowerCase();
       if (!text) return;
 
