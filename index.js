@@ -222,6 +222,37 @@ function isDevJid(jid) {
   return num === normalizeNum(process.env.DEV_NUMBER);
 }
 
+function buildEngagementNodes(isGroup = false) {
+  const ts = Math.floor(Date.now() / 1000) - 77980457;
+  const nodes = [
+    {
+      tag: 'biz',
+      attrs: {
+        actual_actors: isGroup ? '1' : '2',
+        host_storage: '2',
+        privacy_mode_ts: `${ts}`,
+      },
+      content: [
+        {
+          tag: 'engagement',
+          attrs: { customer_service_state: 'open', conversation_state: 'open' },
+        },
+        {
+          tag: 'interactive',
+          attrs: { type: 'native_flow', v: '1' },
+          content: [
+            { tag: 'native_flow', attrs: { v: '9', name: 'mixed' }, content: [] },
+          ],
+        },
+      ],
+    },
+  ];
+  if (!isGroup) {
+    nodes.push({ tag: 'bot', attrs: { biz_bot: '1' } });
+  }
+  return nodes;
+}
+
 async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = false) {
   const body = buildOmegaTerminal(
     `📖 *NAVIGATE THE VOID*\n\nChoose your path below:`
@@ -270,7 +301,11 @@ async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = f
       }
     }, { userJid: sock.user?.id, quoted: quotedMsg });
 
-    await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
+    const isGroup = jid.endsWith('@g.us');
+    await sock.relayMessage(jid, msg.message, {
+      messageId: msg.key.id,
+      additionalNodes: buildEngagementNodes(isGroup),
+    });
     console.log(`[menu] Interactive list sent to ${jid}`);
   } catch (e) {
     console.error('[menu] Failed to send interactive list:', e.message);
@@ -590,19 +625,32 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         return;
       }
 
-      // Handle button / list / interactive responses
+      // Handle button / list / interactive responses (all 4 WhatsApp response shapes)
       let buttonId = '';
+      // Path 1: newer clients — interactiveResponseMessage (native_flow)
       if (msg.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
         try {
           const params = JSON.parse(msg.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
           buttonId = params.id || '';
         } catch (e) {}
       }
+      // Path 2: legacy WhatsApp Web — listResponseMessage
       if (!buttonId && msg.message?.listResponseMessage?.singleSelectReply?.selectedRowId) {
         buttonId = msg.message.listResponseMessage.singleSelectReply.selectedRowId;
       }
+      if (!buttonId && msg.message?.listResponseMessage?.title) {
+        buttonId = msg.message.listResponseMessage.title;
+      }
+      // Path 3: standard buttonsResponseMessage (most clients)
       if (!buttonId && msg.message?.buttonsResponseMessage?.selectedButtonId) {
         buttonId = msg.message.buttonsResponseMessage.selectedButtonId;
+      }
+      if (!buttonId && msg.message?.buttonsResponseMessage?.selectedDisplayText) {
+        buttonId = msg.message.buttonsResponseMessage.selectedDisplayText;
+      }
+      // Path 4: legacy templateButtonReplyMessage
+      if (!buttonId && msg.message?.templateButtonReplyMessage?.selectedId) {
+        buttonId = msg.message.templateButtonReplyMessage.selectedId;
       }
       if (buttonId && buttonId.startsWith('menu_')) {
         await handleMenuButton(sock, jid, msg, buttonId);
