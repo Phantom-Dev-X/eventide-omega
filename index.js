@@ -276,30 +276,31 @@ async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = f
             deviceListMetadataVersion: 2,
             deviceListMetadata: {}
           },
-          interactiveMessage: proto.Message.InteractiveMessage.create({
-            body: proto.Message.InteractiveMessage.Body.create({ text: body }),
-            footer: proto.Message.InteractiveMessage.Footer.create({ text: footer }),
-            header: proto.Message.InteractiveMessage.Header.create({
-              title: '',
-              subtitle: '',
-              hasMediaAttachment: false
-            }),
-            nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+          interactiveMessage: {
+            body: { text: body },
+            footer: { text: footer },
+            header: { title: '', subtitle: '', hasMediaAttachment: false },
+            nativeFlowMessage: {
               buttons: [{
                 name: 'single_select',
                 buttonParamsJson: JSON.stringify({
                   title: 'NAVIGATE THE VOID',
                   sections: [{
                     title: 'Choose Your Path',
-                    rows: rows
+                    rows: rows.map(r => ({
+                      header: '',
+                      title: r.title,
+                      description: r.description || '',
+                      id: r.id
+                    }))
                   }]
                 })
               }]
-            })
-          })
+            }
+          }
         }
       }
-    }, { userJid: sock.user?.id, quoted: quotedMsg });
+    }, { userJid: sock.user?.id });
 
     const isGroup = jid.endsWith('@g.us');
     await sock.relayMessage(jid, msg.message, {
@@ -324,7 +325,7 @@ async function handleMenuButton(sock, jid, msg, buttonId) {
       `   ╔══ *👑 OWNER MENU* ══╗\n\n` +
       `   " *the sovereign does not ask.*\n     *the sovereign commands.* "\n\n` +
       `   Commands are being prepared.\n   You will be notified when ready.`
-    ) }, { quoted: msg });
+    ) }, quotedOpts(msg));
     return;
   }
   if (buttonId === 'menu_group') {
@@ -332,7 +333,7 @@ async function handleMenuButton(sock, jid, msg, buttonId) {
       `   ╔══ *🛡 GROUP MENU* ══╗\n\n` +
       `   " *every group is a kingdom.*\n     *you decide how it is ruled.* "\n\n` +
       `   Commands are being prepared.\n   You will be notified when ready.`
-    ) }, { quoted: msg });
+    ) }, quotedOpts(msg));
     return;
   }
   if (buttonId === 'menu_fun') {
@@ -340,7 +341,7 @@ async function handleMenuButton(sock, jid, msg, buttonId) {
       `   ╔══ *🎮 FUN MENU* ══╗\n\n` +
       `   " *the void also plays.*\n     *even darkness needs amusement.* "\n\n` +
       `   Commands are being prepared.\n   You will be notified when ready.`
-    ) }, { quoted: msg });
+    ) }, quotedOpts(msg));
     return;
   }
   if (buttonId === 'menu_bug') {
@@ -348,19 +349,19 @@ async function handleMenuButton(sock, jid, msg, buttonId) {
       `   ╔══ *🐞 BUG MENU* ══╗\n\n` +
       `   " *the shield is forged.*\n     *the ward is raised.* "\n\n` +
       `   Commands are being prepared.\n   You will be notified when ready.`
-    ) }, { quoted: msg });
+    ) }, quotedOpts(msg));
     return;
   }
   if (buttonId === 'menu_dev') {
     if (!isDev) {
-      await sock.sendMessage(jid, { text: buildOmegaTerminal(`   🔒  *ACCESS_DENIED*\n\n   the throne does not open\n   for the uninvited.`) }, { quoted: msg });
+      await sock.sendMessage(jid, { text: buildOmegaTerminal(`   🔒  *ACCESS_DENIED*\n\n   the throne does not open\n   for the uninvited.`) }, quotedOpts(msg));
       return;
     }
     await sock.sendMessage(jid, { text: buildOmegaTerminal(
       `   ╔══ *🔴 ARCHITECT MENU* ══╗\n\n` +
       `   " *only the architect may*\n     *enter this chamber.* "\n\n` +
       `   Commands are being prepared.\n   You will be notified when ready.`
-    ) }, { quoted: msg });
+    ) }, quotedOpts(msg));
     return;
   }
 }
@@ -369,6 +370,9 @@ async function handleMenuButton(sock, jid, msg, buttonId) {
 function normalizeNum(input) { return String(input || '').replace(/[^\d]/g, ''); }
 async function sendReaction(sock, jid, key, emoji) {
   try { await sock.sendMessage(jid, { react: { text: emoji, key } }); } catch (e) { console.log('[reaction]', e.message); }
+}
+function quotedOpts(msg) {
+  return (msg?.key?.fromMe) ? {} : { quoted: msg };
 }
 function clearAuth() {
   try { if (fs.existsSync(AUTH_DIR)) { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); console.log(`[auth] Cleared ${AUTH_DIR}`); } } catch (e) { console.error('[auth] clearAuth error:', e); }
@@ -581,20 +585,20 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         const parts = text.trim().split(/\s+/);
         const number = parts[1] ? parts[1].replace(/\+/g, '').replace(/\s/g, '') : '';
         if (!number || !/^\d{10,15}$/.test(number)) {
-          await sock.sendMessage(jid, { text: buildOmegaTerminal('Usage: .pair <full number with country code>\nExample: .pair 2348012345678\n\nOr use Telegram: /pair <number>\n\nUse .relink to restart if pairing fails.') }, { quoted: msg });
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('Usage: .pair <full number with country code>\nExample: .pair 2348012345678\n\nOr use Telegram: /pair <number>\n\nUse .relink to restart if pairing fails.') }, quotedOpts(msg));
           return;
         }
         if (isConnected) {
-          await sock.sendMessage(jid, { text: buildOmegaTerminal('Bot is already paired. No code needed.') }, { quoted: msg });
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('Bot is already paired. No code needed.') }, quotedOpts(msg));
           return;
         }
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Starting fresh pairing...\nPlease wait 15-20 seconds.') }, { quoted: msg });
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Starting fresh pairing...\nPlease wait 15-20 seconds.') }, quotedOpts(msg));
         startBot(number, null, 'pair').catch(console.error);
         return;
       }
 
       if (lower === '.relink') {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Clearing session and restarting...\nPlease wait 15-20 seconds.') }, { quoted: msg });
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('🔄 Clearing session and restarting...\nPlease wait 15-20 seconds.') }, quotedOpts(msg));
         try { sock.end(new Error('relink')); } catch (_) {}
         currentSock = null; clearAuth(); clearReconnectTimer(); isPairing = false;
         setTimeout(() => startBot(null, null, 'relink').catch(console.error), 4000);
@@ -603,7 +607,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
 
       if (lower === '.telegram.pair') {
         const reply = buildOmegaTerminal(TELEGRAM_TOKEN ? 'Telegram bridge active. Use /pair <number> there.' : 'No TELEGRAM_TOKEN set.');
-        await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+        await sock.sendMessage(jid, { text: reply }, quotedOpts(msg));
         return;
       }
 
@@ -611,7 +615,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         const p = lower.split(' ')[1];
         if (['eclipse', 'astraea'].includes(p)) {
           setBotPersona(jid, p);
-          await sock.sendMessage(jid, { text: buildOmegaTerminal(`Persona: *${p.toUpperCase()}*\n${eclipseSay('ping', p)}`) }, { quoted: msg });
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(`Persona: *${p.toUpperCase()}*\n${eclipseSay('ping', p)}`) }, quotedOpts(msg));
         }
         return;
       }
@@ -670,7 +674,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
 
    " *An echo in the void is*
      *the only proof you exist* ."`;
-        await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, { quoted: msg });
+        await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, quotedOpts(msg));
         return;
       }
 
@@ -686,17 +690,17 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
 
    " *Creation is the first step*
      *toward destruction* ."`;
-        await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, { quoted: msg });
+        await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, quotedOpts(msg));
         return;
       }
 
       if (lower === '.help') {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n\nMore coming.') }, { quoted: msg });
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n\nMore coming.') }, quotedOpts(msg));
         return;
       }
 
       if (lower.startsWith('.')) {
-        await sock.sendMessage(jid, { text: eclipseSay('bad_use', persona) }, { quoted: msg });
+        await sock.sendMessage(jid, { text: eclipseSay('bad_use', persona) }, quotedOpts(msg));
       }
     } catch (e) {
       console.error('[msg handler error]', e);
@@ -799,13 +803,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
    " *An echo in the void is*
      *the only proof you exist* ."`;
           } else {
-            body = `🌑 *PHANTOM-X RECONNECTED* · 👁
-
-   The signal holds.
-   The void remains.
-
-   " *I am what remains when*
-     *everything else is deleted* ."`;
+            return; // silent reconnect — don't spam self-chat on every minor reconnect
           }
           await sock.sendMessage(selfJid, { text: buildOmegaTerminal(body) });
         } catch (e) { console.error('[self-chat]', e.message); }
