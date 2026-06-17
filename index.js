@@ -417,8 +417,13 @@ async function restoreAuthFromChannel() {
 let currentSock = null;
 let currentQR = null;
 let isConnected = false;
+let currentOrigin = 'auto';
+let lastRestoreCtx = null;
+let restoreQrDetected = false;
 
 async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 'auto') {
+  currentOrigin = connectOrigin;
+  if (connectOrigin === 'restore') lastRestoreCtx = telegramCtx;
   if (isPairing && phoneNumber) {
     console.log('[socket] Pairing already in progress, ignoring duplicate');
     if (telegramCtx) await telegramCtx.reply('⏳ Pairing already in progress. Please wait for the code or send /relink to restart.');
@@ -653,7 +658,18 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     if (socketGeneration !== myGen) { console.log(`[socket] Gen ${myGen} ignoring stale update`); return; }
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) { currentQR = qr; console.log('📱 QR ready — use Telegram /pair or /qr endpoint to scan'); }
+    if (qr) {
+      currentQR = qr;
+      console.log('📱 QR ready — use Telegram /pair or /qr endpoint to scan');
+      // Detect bad restored backup: if we restored auth but still get QR, the backup was incomplete
+      if (currentOrigin === 'restore' && !restoreQrDetected) {
+        restoreQrDetected = true;
+        console.log(`[restore] Gen ${myGen} restored auth produced QR — backup is INCOMPLETE`);
+        if (lastRestoreCtx) {
+          await lastRestoreCtx.reply('❌ Restored backup is incomplete.\n\nThe session was saved before pairing fully completed.\n\n*Steps to fix:*\n1. Send /relink\n2. Wait 20 seconds\n3. Send /pair with your number\n4. Enter the code in WhatsApp\n5. Wait for "Phantom-X is online"\n6. Send /backup to create a valid backup\n\n— EVENTIDE OMEGA');
+        }
+      }
+    }
 
     if (connection === 'close') {
       isConnected = false; currentQR = null;
@@ -687,6 +703,16 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         return;
       }
       if (!everConnected && !isPairing) {
+        if (restoreQrDetected) {
+          // Restored auth was incomplete (produced QR). Clear it and stop retrying.
+          console.log(`[socket] Gen ${myGen} restored auth was incomplete — clearing and stopping retry`);
+          clearAuth();
+          restoreQrDetected = false;
+          if (lastRestoreCtx) {
+            await lastRestoreCtx.reply('❌ Restored backup was incomplete. Auth cleared.\n\nPlease pair fresh with /pair and create a new backup with /backup.');
+          }
+          return;
+        }
         // Restored auth failed to reconnect — keep auth and retry
         console.log(`[socket] Gen ${myGen} reconnection failed with restored auth — will retry (not clearing)`);
       }
@@ -697,6 +723,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
       }
     } else if (connection === 'open') {
       everConnected = true; isConnected = true; currentQR = null; isPairing = false;
+      restoreQrDetected = false;
       successfulPairings++;
       saveSessions();
       console.log('✅ Phantom-X connected! origin=' + connectOrigin);
@@ -818,7 +845,7 @@ async function initTelegram() {
       try { currentSock.ev.removeAllListeners(); currentSock.end(new Error('relink')); } catch (_) {}
       currentSock = null;
     }
-    clearReconnectTimer(); clearAuth(); isPairing = false;
+    clearReconnectTimer(); clearAuth(); isPairing = false; restoreQrDetected = false;
     setTimeout(() => startBot(null, null, 'relink').catch(console.error), 4000);
   });
 
@@ -842,6 +869,8 @@ async function initTelegram() {
     const uptime = formatUptime(Date.now() - botStartTime);
     const authExists = fs.existsSync(AUTH_DIR) && fs.readdirSync(AUTH_DIR).length > 0;
     const botPhone = (currentSock && currentSock.user?.id) ? currentSock.user.id.split(':')[0].split('@')[0] : 'N/A';
+    const isRegistered = (currentSock && currentSock.authState?.creds?.registered) ? 'YES' : 'NO';
+    const backupStatus = restoreQrDetected ? '❌ LAST RESTORE FAILED (incomplete backup)' : 'OK';
     const lines = [
       `📱 *SESSION STATUS*`,
       ``,
@@ -852,7 +881,9 @@ async function initTelegram() {
       `⏱️ Uptime: ${uptime}`,
       `🤖 Bot Number: ${botPhone}`,
       `📁 Auth Files: ${authExists ? 'YES' : 'NO'}`,
+      `🔐 Auth Registered: ${isRegistered}`,
       `🔄 Pairing: ${isPairing ? 'IN PROGRESS' : 'IDLE'}`,
+      `💾 Backup: ${backupStatus}`,
       ``,
       `— *EVENTIDE OMEGA* · 👁`
     ];
@@ -876,7 +907,7 @@ async function initTelegram() {
         try { currentSock.ev.removeAllListeners(); currentSock.end(new Error('restore')); } catch (_) {}
         currentSock = null;
       }
-      clearReconnectTimer(); isConnected = false; currentQR = null; isPairing = false;
+      clearReconnectTimer(); isConnected = false; currentQR = null; isPairing = false; restoreQrDetected = false;
       setTimeout(() => startBot(null, { reply: (t, opts) => bot.sendMessage(chatId, t, opts) }, 'restore').catch(console.error), 2000);
     } catch (e) {
       console.error('[restore cmd]', e);
