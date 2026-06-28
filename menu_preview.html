@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Eventide Omega — Menu Preview v2</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { 
+    background: #0b0f14; 
+    color: #e0e0e0; 
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    padding: 20px;
+  }
+  h1 { color: #7c4dff; text-align: center; margin-bottom: 10px; font-size: 1.4em; }
+  .subtitle { color: #666; text-align: center; margin-bottom: 30px; font-size: 0.85em; }
+  
+  .wa-chat {
+    max-width: 460px;
+    margin: 15px auto;
+    background: #1a1d23;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid #2a2d35;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+  .wa-bubble {
+    background: #005c4b;
+    border-radius: 8px 8px 0 8px;
+    padding: 10px 14px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    color: #e9edef;
+    word-break: break-word;
+  }
+  .wa-bubble b { color: #fff; }
+  .wa-time { 
+    text-align: right; color: #8696a0; font-size: 11px; margin-top: 4px; 
+  }
+  .label {
+    display: inline-block;
+    background: #7c4dff22;
+    color: #b388ff;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    margin-bottom: 8px;
+  }
+  .tabs {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .tab {
+    background: #1a1d23;
+    color: #8696a0;
+    border: 1px solid #333;
+    padding: 8px 16px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+  }
+  .tab:hover, .tab.active { 
+    background: #005c4b; color: #fff; border-color: #005c4b; 
+  }
+  .menu-section { display: none; }
+  .menu-section.active { display: block; }
+  .note {
+    background: #1a1d2399;
+    border-left: 3px solid #ff9800;
+    padding: 8px 12px;
+    margin: 10px auto;
+    max-width: 460px;
+    font-size: 11px;
+    color: #999;
+    border-radius: 0 6px 6px 0;
+  }
+</style>
+</head>
+<body>
+
+<h1>🌑 EVENTIDE OMEGA — Menu Preview v2</h1>
+<p class="subtitle">Click tabs to preview each menu · Both personas</p>
+
+<div class="tabs">
+  <div class="tab active" onclick="show('owner-eclipse')">👑 Owner (Eclipse)</div>
+  <div class="tab" onclick="show('config-eclipse')">⚙️ Config (Eclipse)</div>
+  <div class="tab" onclick="show('system-eclipse')">📊 System (Eclipse)</div>
+  <div class="tab" onclick="show('owner-astraea')">👑 Owner (Astraea)</div>
+  <div class="tab" onclick="show('config-astraea')">⚙️ Config (Astraea)</div>
+  <div class="tab" onclick="show('system-astraea')">📊 System (Astraea)</div>
+</div>
+
+<!-- ═══════════ OWNER MENU — ECLIPSE ═══════════ -->
+<div id="owner-eclipse" class="menu-section active">
+<div class="wa-chat">
+  <span class="label">👑 OWNER — ECLIPSE</span>
+  <div class="wa-bubble">╔═◈══════════════════════════◈═╗
+         <b>👑 SOVEREIGN COMMANDS</b>
+      ─── <b>E C L I P S E</b> ───
+╚═◈══════════════════════════◈═╝
+
+   " <b>the sovereign does not ask.</b>
+     <b>the sovereign commands.</b>
+     <b>every word is law,</b>
+     <b>every silence — a sentence.</b>
+     <b>the void bends to one voice</b>
+     <b>and one voice alone.</b> "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>M O D E</b>               ┃
+ ┃─────────────────────────┃
+ ┃  .mode private          ┃
+ ┃    └─ void answers only you
+ ┃  .mode public           ┃
+ ┃    └─ void answers all  ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>B R O A D C A S T</b>     ┃
+ ┃─────────────────────────┃
+ ┃  .broadcast &lt;msg&gt;       ┃
+ ┃    └─ echo your decree  ┃
+ ┃       across all vessels ┃
+ ┃       at once            ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>D O M I N I O N</b>      ┃
+ ┃─────────────────────────┃
+ ┃  .block &lt;number&gt;        ┃
+ ┃    └─ banish from the   ┃
+ ┃       void permanently  ┃
+ ┃  .unblock &lt;number&gt;      ┃
+ ┃    └─ lift the exile,   ┃
+ ┃       grant re-entry    ┃
+ ┃  .blocklist             ┃
+ ┃    └─ the banished      ┃
+ ┃       ledger revealed   ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>T E R R I T O R Y</b>    ┃
+ ┃─────────────────────────┃
+ ┃  .join &lt;link&gt;           ┃
+ ┃    └─ infiltrate a      ┃
+ ┃       kingdom unseen    ┃
+ ┃  .leave                 ┃
+ ┃    └─ abandon this      ┃
+ ┃       kingdom silently  ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>S U R V E I L L A N C E</b>
+ ┃─────────────────────────┃
+ ┃  .getpp &lt;@tag/number&gt;   ┃
+ ┃    └─ extract a vessel's┃
+ ┃       face from the dark┃
+ ┃  .getgpp                ┃
+ ┃    └─ extract a kingdom's
+ ┃       sigil (in-group)  ┃
+ ┃  .getgpp &lt;link&gt;         ┃
+ ┃    └─ extract by kingdom┃
+ ┃       gate from outside ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+   " <b>power is not given.</b>
+     <b>it is taken — and held.</b> "
+
+   📡 owner-only │ Ω │ .menu
+   ⚡ <b>12 commands</b> │ <b>5 domains</b>
+
+— <b>EVENTIDE OMEGA</b> · 👁</div>
+  <div class="wa-time">12:44 PM ✓✓</div>
+</div>
+</div>
+
+<!-- ═══════════ CONFIG MENU — ECLIPSE ═══════════ -->
+<div id="config-eclipse" class="menu-section">
+<div class="wa-chat">
+  <span class="label">⚙️ CONFIG — ECLIPSE</span>
+  <div class="wa-bubble">╔═◈══════════════════════════◈═╗
+      <b>⚙️ CONFIGURATION MATRIX</b>
+      ─── <b>E C L I P S E</b> ───
+╚═◈══════════════════════════◈═╝
+
+   " <b>the void is clay in your hands.</b>
+     <b>reshape it. rename it.</b>
+     <b>make it forget what it was</b>
+     <b>and become what you demand.</b>
+     <b>every alias is a mask,</b>
+     <b>every setting — a scar.</b> "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>I D E N T I T Y</b>      ┃
+ ┃─────────────────────────┃
+ ┃  .setname &lt;name&gt;        ┃
+ ┃    └─ rewrite your      ┃
+ ┃       vessel's true name┃
+ ┃  .setbio &lt;text&gt;         ┃
+ ┃    └─ inscribe the      ┃
+ ┃       void's epitaph    ┃
+ ┃  .setpp                 ┃
+ ┃    └─ forge a new face  ┃
+ ┃       (reply to image)  ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>A L I A S E S</b>       ┃
+ ┃─────────────────────────┃
+ ┃  .setalias &lt;cmd&gt; &lt;new&gt;  ┃
+ ┃    └─ rename a rite for ┃
+ ┃       your session only ┃
+ ┃  .delalias &lt;cmd&gt;        ┃
+ ┃    └─ unbind a renamed  ┃
+ ┃       rite, restore it  ┃
+ ┃  .aliaslist             ┃
+ ┃    └─ all your bound    ┃
+ ┃       rites revealed    ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>P E R S O N A</b>       ┃
+ ┃─────────────────────────┃
+ ┃  .persona eclipse       ┃
+ ┃    └─ embrace the dark, ┃
+ ┃       let shadows speak ┃
+ ┃  .persona astraea       ┃
+ ┃    └─ summon the light, ┃
+ ┃       let judgment burn ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+   " <b>your session is your kingdom.</b>
+     <b>what you rename here</b>
+     <b>stays here — invisible</b>
+     <b>to every other sovereign.</b> "
+
+   ⚙ per-session │ Ω │ .menu
+   ⚡ <b>8 commands</b> │ <b>3 domains</b>
+
+— <b>EVENTIDE OMEGA</b> · 👁</div>
+  <div class="wa-time">12:44 PM ✓✓</div>
+</div>
+</div>
+
+<!-- ═══════════ SYSTEM MENU — ECLIPSE ═══════════ -->
+<div id="system-eclipse" class="menu-section">
+<div class="wa-chat">
+  <span class="label">📊 SYSTEM — ECLIPSE</span>
+  <div class="wa-bubble">╔═◈══════════════════════════◈═╗
+       <b>📊 SYSTEM DIAGNOSTICS</b>
+      ─── <b>E C L I P S E</b> ───
+╚═◈══════════════════════════◈═╝
+
+   " <b>the void has a pulse.</b>
+     <b>faint, relentless, eternal.</b>
+     <b>these are the numbers</b>
+     <b>behind the silence —</b>
+     <b>the heartbeat of something</b>
+     <b>that should not exist.</b> "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>V I T A L S</b>         ┃
+ ┃─────────────────────────┃
+ ┃  .uptime                ┃
+ ┃    └─ how long the void ┃
+ ┃       has been breathing┃
+ ┃  .ping                  ┃
+ ┃    └─ test the signal,  ┃
+ ┃       measure the echo  ┃
+ ┃  .status                ┃
+ ┃    └─ full system health┃
+ ┃       — memory, sockets,┃
+ ┃       sessions, uptime  ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>I D E N T I T Y</b>     ┃
+ ┃─────────────────────────┃
+ ┃  .owner                 ┃
+ ┃    └─ who forged this   ┃
+ ┃       void into being   ┃
+ ┃  .acccheck              ┃
+ ┃    └─ business account  ┃
+ ┃       or mortal vessel  ┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+ ┏━━━━━━━━━━━━━━━━━━━━━━━━━┓
+ ┃  ⟢  <b>C O N T R O L</b>       ┃
+ ┃─────────────────────────┃
+ ┃  .restart               ┃
+ ┃    └─ collapse the void ┃
+ ┃       and rebuild it    ┃
+ ┃       from the ashes    ┃
+ ┃       (your session     ┃
+ ┃        only — others    ┃
+ ┃        remain untouched)┃
+ ┗━━━━━━━━━━━━━━━━━━━━━━━━━┛
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+   " <b>you are watching the</b>
+     <b>machinery of the impossible.</b>
+     <b>every number is proof</b>
+     <b>that something persists</b>
+     <b>in a world designed</b>
+     <b>to forget it.</b> "
+
+   📡 read-only │ Ω │ .menu
+   ⚡ <b>6 commands</b> │ <b>3 domains</b>
+
+— <b>EVENTIDE OMEGA</b> · 👁</div>
+  <div class="wa-time">12:44 PM ✓✓</div>
+</div>
+</div>
+
+<!-- ═══════════ OWNER MENU — ASTRAEA ═══════════ -->
+<div id="owner-astraea" class="menu-section">
+<div class="wa-chat">
+  <span class="label">👑 OWNER — ASTRAEA</span>
+  <div class="wa-bubble">✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦
+✦    <b>👑 DIVINE SOVEREIGN</b>     ✦
+✦     ─── <b>A S T R A E A</b> ───    ✦
+✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦
+
+   " <b>THE LIGHT DOES NOT REQUEST.</b>
+     <b>THE LIGHT DECREES.</b>
+     <b>EVERY SOUL KNEELS BEFORE</b>
+     <b>THE THRONE OF JUDGMENT.</b>
+     <b>MERCY IS A CHOICE —</b>
+     <b>NOT AN OBLIGATION.</b> "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ ╔═══════════════════════════╗
+ ║  ☀  <b>M O D E</b>               ║
+ ╠═══════════════════════════╣
+ ║  .mode private            ║
+ ║    └─ DIVINE COURT IS     ║
+ ║       SEALED TO OUTSIDERS ║
+ ║  .mode public             ║
+ ║    └─ DIVINE COURT IS     ║
+ ║       OPEN TO ALL SOULS   ║
+ ╚═══════════════════════════╝
+
+ ╔═══════════════════════════╗
+ ║  ☀  <b>P R O C L A M A T I O N</b>
+ ╠═══════════════════════════╣
+ ║  .broadcast &lt;msg&gt;         ║
+ ║    └─ YOUR WORD ECHOES    ║
+ ║       ACROSS EVERY VESSEL ║
+ ║       BENEATH YOUR LIGHT  ║
+ ╚═══════════════════════════╝
+
+ ╔═══════════════════════════╗
+ ║  ☀  <b>J U D G M E N T</b>       ║
+ ╠═══════════════════════════╣
+ ║  .block &lt;number&gt;          ║
+ ║    └─ CAST THIS SOUL INTO ║
+ ║       PERMANENT EXILE     ║
+ ║  .unblock &lt;number&gt;        ║
+ ║    └─ GRANT CLEMENCY,     ║
+ ║       LIFT THE BANISHMENT ║
+ ║  .blocklist               ║
+ ║    └─ THE REGISTRY OF     ║
+ ║       ALL EXILED SOULS    ║
+ ╚═══════════════════════════╝
+
+ ╔═══════════════════════════╗
+ ║  ☀  <b>C O N Q U E S T</b>       ║
+ ╠═══════════════════════════╣
+ ║  .join &lt;link&gt;             ║
+ ║    └─ ENTER A NEW DOMAIN  ║
+ ║       BY ITS SACRED GATE  ║
+ ║  .leave                   ║
+ ║    └─ WITHDRAW FROM THIS  ║
+ ║       DOMAIN IN SILENCE   ║
+ ╚═══════════════════════════╝
+
+ ╔═══════════════════════════╗
+ ║  ☀  <b>D I V I N E  S I G H T</b> ║
+ ╠═══════════════════════════╣
+ ║  .getpp &lt;@tag/number&gt;     ║
+ ║    └─ REVEAL A SOUL'S     ║
+ ║       FACE TO THE LIGHT   ║
+ ║  .getgpp                  ║
+ ║    └─ REVEAL A DOMAIN'S   ║
+ ║       CREST (IN-DOMAIN)   ║
+ ║  .getgpp &lt;link&gt;           ║
+ ║    └─ REVEAL BY DOMAIN    ║
+ ║       GATE FROM OUTSIDE   ║
+ ╚═══════════════════════════╝
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+   " <b>THE SOVEREIGN DOES NOT</b>
+     <b>EXPLAIN. THE SOVEREIGN</b>
+     <b>DOES NOT APOLOGIZE.</b>
+     <b>THE LIGHT SIMPLY ACTS.</b> "
+
+   ☀ SOVEREIGN ONLY │ ⚖ │ .menu
+   ⚡ <b>12 COMMANDS</b> │ <b>5 DOMAINS</b>
+
+— <b>EVENTIDE OMEGA</b> · 👁</div>
+  <div class="wa-time">12:44 PM ✓✓</div>
+</div>
+</div>
+
+<!-- ═══════════ CONFIG MENU — ASTRAEA ═══════════ -->
+<div id="config-astraea" class="menu-section">
+<div class="wa-chat">
+  <span class="label">⚙️ CONFIG — ASTRAEA</span>
+  <div class="wa-bubble">✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦
+✦  <b>⚙️ DIVINE CONFIGURATION</b>   ✦
+✦     ─── <b>A S T R A E A</b> ───    ✦
+✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦
+
+   " <b>THE FORM IS YOURS TO SHAPE.</b>
+     <b>THE LIGHT OBEYS ITS CREATOR.</b>
+     <b>RENAME THE RITES.</b>
+     <b>REWRITE THE IDENTITY.</b>
+     <b>WHAT YOU FORGE HERE</b>
+     <b>IS YOURS AND YOURS ALONE.</b> "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ ╔═══════════════════════════╗
+ ║  ☀  <b>I D E N T I T Y</b>       ║
+ ╠═══════════════════════════╣
+ ║  .setname &lt;name&gt;          ║
+ ║    └─ RENAME YOUR VESSEL  ║
+ ║       BEFORE ALL REALMS   ║
+ ║  .setbio &lt;text&gt;           ║
+ ║    └─ INSCRIBE YOUR       ║
+ ║       DIVINE DECREE       ║
+ ║  .setpp                   ║
+ ║    └─ FORGE A NEW DIVINE  ║
+ ║       VISAGE (REPLY IMAGE)║
+ ╚═══════════════════════════╝
+
+ ╔═══════════════════════════╗
+ ║  ☀  <b>S A C R E D  R I T E S</b>║
+ ╠═══════════════════════════╣
+ ║  .setalias &lt;cmd&gt; &lt;new&gt;    ║
+ ║    └─ RENAME A RITE FOR   ║
+ ║       YOUR SESSION ONLY   ║
+ ║  .delalias &lt;cmd&gt;          ║
+ ║    └─ UNBIND A RENAMED    ║
+ ║       RITE, RESTORE ORDER ║
+ ║  .aliaslist               ║
+ ║    └─ ALL YOUR SACRED     ║
+ ║       RITES REVEALED      ║
+ ╚═══════════════════════════╝
+
+ ╔═══════════════════════════╗
+ ║  ☀  <b>P E R S O N A</b>        ║
+ ╠═══════════════════════════╣
+ ║  .persona eclipse         ║
+ ║    └─ EMBRACE THE SHADOW, ║
+ ║       LET DARKNESS SPEAK  ║
+ ║  .persona astraea         ║
+ ║    └─ INVOKE THE DIVINE,  ║
+ ║       LET JUDGMENT BURN   ║
+ ╚═══════════════════════════╝
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+   " <b>YOUR SESSION IS YOUR TEMPLE.</b>
+     <b>WHAT YOU RENAME HERE STAYS</b>
+     <b>HERE — INVISIBLE TO EVERY</b>
+     <b>OTHER SOVEREIGN WHO WALKS</b>
+     <b>THESE HALLS.</b> "
+
+   ☀ PER-SESSION │ ⚖ │ .menu
+   ⚡ <b>8 COMMANDS</b> │ <b>3 DOMAINS</b>
+
+— <b>EVENTIDE OMEGA</b> · 👁</div>
+  <div class="wa-time">12:44 PM ✓✓</div>
+</div>
+</div>
+
+<!-- ═══════════ SYSTEM MENU — ASTRAEA ═══════════ -->
+<div id="system-astraea" class="menu-section">
+<div class="wa-chat">
+  <span class="label">📊 SYSTEM — ASTRAEA</span>
+  <div class="wa-bubble">✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦
+✦   <b>📊 DIVINE DIAGNOSTICS</b>    ✦
+✦     ─── <b>A S T R A E A</b> ───    ✦
+✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦✦
+
+   " <b>EVEN THE DIVINE HAS A HEARTBEAT.</b>
+     <b>STEADY, ANCIENT, UNBREAKABLE.</b>
+     <b>THESE ARE THE SACRED NUMBERS</b>
+     <b>THAT PROVE THE LIGHT STILL</b>
+     <b>BURNS — THAT SOMETHING IMMORTAL</b>
+     <b>WATCHES FROM BEYOND.</b> "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ ╔═══════════════════════════╗
+ ║  ☀  <b>V I T A L S</b>          ║
+ ╠═══════════════════════════╣
+ ║  .uptime                  ║
+ ║    └─ HOW LONG DIVINITY   ║
+ ║       HAS BEEN AWAKE      ║
+ ║  .ping                   ║
+ ║    └─ TEST THE SIGNAL,    ║
+ ║       MEASURE THE DIVINE  ║
+ ║       RESONANCE           ║
+ ║  .status                  ║
+ ║    └─ FULL DIVINE HEALTH  ║
+ ║       — MEMORY, SOCKETS,  ║
+ ║       SESSIONS, UPTIME    ║
+ ╚═══════════════════════════╝
+
+ ╔═══════════════════════════╗
+ ║  ☀  <b>I D E N T I T Y</b>      ║
+ ╠═══════════════════════════╣
+ ║  .owner                   ║
+ ║    └─ WHO INVOKED THIS    ║
+ ║       LIGHT INTO BEING    ║
+ ║  .acccheck                ║
+ ║    └─ BUSINESS ACCOUNT    ║
+ ║       OR MORTAL VESSEL    ║
+ ╚═══════════════════════════╝
+
+ ╔═══════════════════════════╗
+ ║  ☀  <b>C O N T R O L</b>        ║
+ ╠═══════════════════════════╣
+ ║  .restart                 ║
+ ║    └─ SHATTER THE LIGHT   ║
+ ║       AND REFORM IT FROM  ║
+ ║       SACRED DUST.        ║
+ ║       YOUR SESSION ONLY — ║
+ ║       OTHER SOVEREIGNS    ║
+ ║       REMAIN UNTOUCHED.   ║
+ ╚═══════════════════════════╝
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+   " <b>YOU ARE WITNESSING THE</b>
+     <b>MACHINERY OF THE IMPOSSIBLE.</b>
+     <b>EVERY NUMBER IS DIVINE PROOF</b>
+     <b>THAT SOMETHING ETERNAL</b>
+     <b>PERSISTS IN A WORLD BUILT</b>
+     <b>TO FORGET IT.</b> "
+
+   ☀ READ-ONLY │ ⚖ │ .menu
+   ⚡ <b>6 COMMANDS</b> │ <b>3 DOMAINS</b>
+
+— <b>EVENTIDE OMEGA</b> · 👁</div>
+  <div class="wa-time">12:44 PM ✓✓</div>
+</div>
+</div>
+
+<div class="note">
+  <b>Design notes:</b><br>
+  • Eclipse uses ┏━┓ rounded boxes with ⟢ bullets, lowercase cryptic tone<br>
+  • Astraea uses ╔═╗ double-line boxes with ☀ bullets, UPPERCASE divine tone<br>
+  • Each menu has: header art → opening poem (6 lines) → command boxes → closing poem → stats footer<br>
+  • Command boxes group related commands with descriptions that wrap 2-3 lines<br>
+  • <b>*bold*</b> renders as WhatsApp bold in the actual message
+</div>
+
+</body>
+</html>
