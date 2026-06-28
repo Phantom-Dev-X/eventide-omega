@@ -186,13 +186,26 @@
 </div>
 
 <script>
+    // BOT_URL — allows pair.html to be hosted anywhere (Vercel, GitHub Pages, etc.)
+    // and still talk to the actual bot on Render/panel.
+    // Usage:  https://your-vercel-site.vercel.app/pair.html?bot=https://your-bot.onrender.com
+    // If no ?bot= param, falls back to same-origin (normal operation when served from the bot).
+    const BOT_URL = (() => {
+        const p = new URLSearchParams(location.search).get('bot') || '';
+        return p.replace(/\/$/, ''); // strip trailing slash
+    })();
+    function api(path) { return BOT_URL + path; }
+
     // Gate behind real backend auth — kick to login if not signed in.
     (async () => {
         try {
-            const r = await fetch('/api/auth/me', { credentials: 'same-origin' });
+            const r = await fetch(api('/api/auth/me'), { credentials: 'include' });
             const d = await r.json();
-            if (!d.ok || !d.authed) { window.location.replace('/login.html'); return; }
-        } catch (_) { window.location.replace('/login.html'); }
+            if (!d.ok || !d.authed) {
+                window.location.replace((BOT_URL || '') + '/login.html' + (BOT_URL ? '?bot=' + encodeURIComponent(BOT_URL) : ''));
+                return;
+            }
+        } catch (_) { window.location.replace((BOT_URL || '') + '/login.html'); }
     })();
 
     let currentCode = '', currentSessionId = null, pollInterval = null;
@@ -273,9 +286,10 @@
         }
         pairHint.textContent = '⏳ Asking WhatsApp for your code… this takes a few seconds.';
         try {
-            const r = await fetch('/api/pair', {
+            const r = await fetch(api('/api/pair'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({ phone, force: true })
             });
             const d = await r.json();
@@ -307,11 +321,11 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner"></span> Verifying...';
         try {
-            const r = await fetch('/api/s/' + encodeURIComponent(val) + '/info');
+            const r = await fetch(api('/api/s/' + encodeURIComponent(val) + '/info'), { credentials: 'include' });
             const d = await r.json();
             if (d.ok) {
                 localStorage.setItem('eo_session', val);
-                window.location.href = '/dashboard.html?s=' + encodeURIComponent(val);
+                window.location.href = (BOT_URL || '') + '/dashboard.html?s=' + encodeURIComponent(val);
             } else {
                 showError('err-session', d.error || 'Invalid Session ID. Try again.');
                 btn.disabled = false;
@@ -328,7 +342,7 @@
         if (pollInterval) clearInterval(pollInterval);
         pollInterval = setInterval(async () => {
             try {
-                const r = await fetch('/api/status?id=' + currentSessionId);
+                const r = await fetch(api('/api/status?id=' + currentSessionId), { credentials: 'include' });
                 const d = await r.json();
                 if (d.ok) {
                     if (d.status === 'connected') {

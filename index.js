@@ -8890,8 +8890,32 @@ async function updateTelegramDescription(botInstance) {
 const app = express();
 const crypto = require('crypto');
 
+// MAX_USERS: hard cap on how many WhatsApp sessions this instance will serve.
+// Set via env var. 0 = unlimited. Default 0 (unlimited unless you set it).
+const MAX_USERS = parseInt(process.env.MAX_USERS || '0') || 0;
+
 // ── Middleware ──
 app.use(express.json());
+
+// CORS — allow cross-origin requests so pair.html can be hosted on Vercel
+// and still call the bot API on Render/panel.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+  if (!origin || origin === '' || ALLOWED_ORIGINS.includes(origin) || ALLOWED_ORIGINS.includes('*')) {
+    if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+  } else if (ALLOWED_ORIGINS.length === 0) {
+    // No restriction configured — allow all (open bot, not production-safe but convenient)
+    if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // Cookie parser (simple — before routes)
 app.use((req, res, next) => {
   req.cookies = {};
@@ -9072,6 +9096,11 @@ app.post('/api/pair', async (req, res) => {
   if (!phone) return res.json({ ok: false, error: 'Phone number required' });
   const num = normalizeNum(phone);
   if (!/^\d{10,15}$/.test(num)) return res.json({ ok: false, error: 'Invalid phone number' });
+
+  // Enforce per-instance user cap (set MAX_USERS env var, 0 = unlimited)
+  if (MAX_USERS > 0 && getLinkedCount() >= MAX_USERS) {
+    return res.json({ ok: false, error: `This server is full (max ${MAX_USERS} users). Please use another Eventide Omega instance.` });
+  }
 
   const authToken = req.cookies?.eo_token || req.headers.authorization?.replace('Bearer ', '');
   if (!authToken || !webSessions[authToken]?.email) {

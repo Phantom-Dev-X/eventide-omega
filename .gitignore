@@ -1,0 +1,19 @@
+node_modules/
+.env
+*.log
+
+# WhatsApp session folders — contain private keys, NEVER commit
+auth_info/
+auth_info_*/
+
+# Root-level creds.json (sometimes dropped by baileys — never commit)
+creds.json
+
+# Telegram session backup zips
+*.zip
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "name": "phantom-x-web",
+  "builds": [
+    { "src": "public/**", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/pair.html",      "dest": "/public/pair.html" },
+    { "src": "/login.html",     "dest": "/public/login.html" },
+    { "src": "/dashboard.html", "dest": "/public/dashboard.html" },
+    { "src": "/features.html",  "dest": "/public/features.html" },
+    { "src": "/newfeatures.html","dest": "/public/newfeatures.html" },
+    { "src": "/(.*)",           "dest": "/public/index.html" }
+  ]
+}
