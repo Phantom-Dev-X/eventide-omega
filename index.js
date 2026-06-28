@@ -8466,6 +8466,16 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         return;
       }
       if (!everConnected && !isPairing) {
+        // Fresh relink/start with no credentials — no point retrying, just wait for /pair
+        if (!isMultiSession && !fs.existsSync(path.join(authDir, 'creds.json'))) {
+          console.log(`[socket:${sessionKey}] Gen ${myGen} no credentials found — stopping reconnect. Send /pair to connect.`);
+          if (telegramBot && TELEGRAM_BACKUP_CHANNEL) {
+            telegramBot.sendMessage(TELEGRAM_BACKUP_CHANNEL,
+              `⏸ *Ready to pair — no session loaded*\n\nSend /pair <number> to link a WhatsApp number.\n\n— EVENTIDE OMEGA`, { parse_mode: 'Markdown' }).catch(() => {});
+          }
+          return;
+        }
+
         if (restoreQrDetected) {
           // Restored auth was incomplete (produced QR). Clear it and stop retrying.
           console.log(`[socket:${sessionKey}] Gen ${myGen} restored auth was incomplete — clearing and stopping retry`);
