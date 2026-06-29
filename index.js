@@ -4848,8 +4848,22 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       learnLidPnMapping(msg);
 
       socketMsgStore.set(msg);
+      // Baileys 7.0.0-rc9+: remoteJid is the LID (conversation thread),
+      // remoteJidAlt is the PN (actual phone number). We keep rawJid as
+      // the LID (since that's the conversation thread Baileys uses for
+      // routing), but also capture remoteJidAlt for senderPn-detection
+      // edge cases where senderPn isn't populated.
       const rawJid = msg.key.remoteJid;
+      const pnJid = msg.key.remoteJidAlt || null;
       let jid = rawJid;
+      // If senderPn is missing but remoteJidAlt has the PN, learn the mapping too
+      if (rawJid && rawJid.endsWith('@lid') && pnJid && pnJid.endsWith('@s.whatsapp.net')) {
+        if (lidToPnMap.get(rawJid) !== pnJid) {
+          console.log(`[lid-map] Learned from remoteJidAlt: ${rawJid} → ${pnJid}`);
+          lidToPnMap.set(rawJid, pnJid);
+          saveLidMapDebounced();
+        }
+      }
 
       // ── INCOMING MSG LOG (helps verify which chat is which in Render logs) ──
       // The remoteJid IS the chat the message came from (this is who we reply to).
@@ -8738,6 +8752,26 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   const firstConnRef = { time: 0 };
 
   sock.ev.on('messages.upsert', handleMessagesUpsert.bind(null, sock, socketMsgStore, firstConnRef));
+
+  // ── Baileys 7.x native LID↔PN mapping listener ──────────────────────────
+  // In 7.0.0-rc9+, Baileys maintains its own LID mapping store and emits
+  // 'lid-mapping.update' whenever a new mapping is learned from incoming
+  // messages. We mirror this into our own lidToPnMap (which we persist to
+  // disk via Telegram backup) so the mapping survives across redeploys.
+  sock.ev.on('lid-mapping.update', async ({ lid, pn }) => {
+    try {
+      if (lid && pn) {
+        const lidJid = String(lid) + (String(lid).includes('@') ? '' : '@lid');
+        const pnJid = String(pn) + (String(pn).includes('@') ? '' : '@s.whatsapp.net');
+        if (lidToPnMap.get(lidJid) !== pnJid) {
+          lidToPnMap.set(lidJid, pnJid);
+          console.log(`[lid-map] ✅ Native Baileys 7.x mapping: ${lidJid} → ${pnJid} (total: ${lidToPnMap.size})`);
+          saveLidMapDebounced();
+        }
+      }
+    } catch (e) { console.log(`[lid-map] native update error: ${e.message}`); }
+  });
+  console.log('[socket] ✅ Registered Baileys 7.x native lid-mapping.update listener');
 
   // ── POLL FIX: messages.update handler for proper Baileys poll vote decryption ──
   // This is the OFFICIAL way Baileys delivers decrypted poll votes.
