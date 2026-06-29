@@ -1915,6 +1915,60 @@ async function handleDeliveryTimeout(msgId, pending) {
     pendingDeliveries.delete(msgId);
     return;
   }
+  pending.retried = true;
+
+  // Try multiple fallback strategies in order:
+  // 1. If pending.jid is PN, find mapped LID and retry there
+  // 2. If pending.jid is LID, try with explicit device suffix (`:0` primary, `:29` bot)
+  // 3. If pending.jid is LID and looks phone-shaped, try constructed PN
+  const tried = [];
+  const tryOne = async (target, label) => {
+    if (!target || tried.includes(target)) return false;
+    tried.push(target);
+    try {
+      const r = await sock.sendMessage(target, { text: pending.text });
+      console.log(`[delivery] 🔄 RETRY[${label}] → ${target} (msgId=${r?.key?.id})`);
+      if (r?.key?.id) {
+        registerPendingDelivery(r.key.id, target, pending.text, sock);
+        return true;
+      }
+    } catch (e) {
+      console.log(`[delivery] ⚠️ RETRY[${label}] failed: ${e.message?.slice(0,80)}`);
+    }
+    return false;
+  };
+
+  // Strategy 1: original was PN — retry with mapped LID
+  if (pending.jid.endsWith('@s.whatsapp.net')) {
+    const lidForPn = findLidForPn(pending.jid);
+    if (lidForPn) {
+      const ok = await tryOne(lidForPn, 'PN→LID');
+      if (ok) return;
+    }
+  }
+
+  // Strategy 2: original was LID — try with explicit device suffixes
+  if (pending.jid.endsWith('@lid')) {
+    const lidNum = pending.jid.split('@')[0].split(':')[0];
+    // Try with bot's own device number (`:29`) — same channel as incoming
+    const ok29 = await tryOne(`${lidNum}:29@lid`, 'LID:29');
+    if (ok29) return;
+    // Try with primary device (`:0`) — recipient's main phone
+    const ok0 = await tryOne(`${lidNum}:0@lid`, 'LID:0');
+    if (ok0) return;
+  }
+
+  // Strategy 3: if LID looks phone-shaped, construct a PN and try
+  if (pending.jid.endsWith('@lid')) {
+    const lidNum = pending.jid.split('@')[0].split(':')[0];
+    if (/^\d{10,15}$/.test(lidNum)) {
+      const okPn = await tryOne(`${lidNum}@s.whatsapp.net`, 'LID→PN');
+      if (okPn) return;
+    }
+  }
+
+  // All retries exhausted
+  console.log(`[delivery] ❌ All ${tried.length} retry strategies failed for ${msgId}`);
   pendingDeliveries.delete(msgId);
 }
 
@@ -1925,6 +1979,14 @@ function markDelivered(msgId) {
     console.log(`[delivery] ✅ Msg ${msgId} delivered to ${pending.jid} in ${elapsed}ms`);
     pendingDeliveries.delete(msgId);
   }
+}
+
+function findLidForPn(pnJid) {
+  // Reverse lookup in lidToPnMap
+  for (const [lid, pn] of lidToPnMap.entries()) {
+    if (pn === pnJid) return lid;
+  }
+  return null;
 }
 
 
