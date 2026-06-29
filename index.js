@@ -1792,14 +1792,12 @@ function saveLidMap() {
 
 let _lidMapSaveTimer = null;
 function saveLidMapDebounced() {
-  // Debounce saves — many messages can arrive in burst, no need to write
-  // the file on each one. Coalesce writes within 2s.
+  // Debounce disk saves — many messages can arrive in burst, no need to
+  // write the file on each one. Coalesce writes within 2s.
   if (_lidMapSaveTimer) clearTimeout(_lidMapSaveTimer);
   _lidMapSaveTimer = setTimeout(() => {
     _lidMapSaveTimer = null;
     saveLidMap();
-    // Also trigger Telegram backup so the map survives even disk loss
-    backupAuthToChannel().catch(() => {});
   }, 2000);
 }
 
@@ -1814,7 +1812,15 @@ function learnLidPnMapping(msg) {
       if (lidToPnMap.get(lid) !== pn) {
         lidToPnMap.set(lid, pn);
         console.log(`[lid-map] Learned: ${lid} → ${pn} (total: ${lidToPnMap.size})`);
-        saveLidMapDebounced();
+        // Immediate disk save + immediate Telegram backup (force=true
+        // bypasses the BACKUP_DEBOUNCE_MS debounce in backupAuthToChannel).
+        // LID mappings don't change once learned, so we want them
+        // persisted ASAP — losing one means the bot can't reply to that
+        // contact until they message us again.
+        saveLidMap();
+        backupAuthToChannel(true).catch((e) => {
+          console.log(`[lid-map] Telegram backup failed: ${e.message}`);
+        });
       }
     }
   } catch (_) { /* ignore */ }
@@ -4621,6 +4627,19 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       socketMsgStore.set(msg);
       const rawJid = msg.key.remoteJid;
       let jid = rawJid;
+
+      // ── INCOMING MSG LOG (helps verify which chat is which in Render logs) ──
+      // The remoteJid IS the chat the message came from (this is who we reply to).
+      // - In DMs: it's the other person's @lid or @s.whatsapp.net
+      // - In self-chat: it's the bot's own @s.whatsapp.net or @lid
+      // - In groups: it's the group's @g.us (with msg.key.participant = sender)
+      // - In channels: it's the channel's @newsletter
+      const _msgType = String(msg.key.remoteJid || '').endsWith('@g.us') ? 'group'
+                     : String(msg.key.remoteJid || '').endsWith('@newsletter') ? 'channel'
+                     : String(msg.key.remoteJid || '').endsWith('@lid') ? 'dm-as-lid'
+                     : String(msg.key.remoteJid || '').endsWith('@s.whatsapp.net') ? 'dm-as-pn'
+                     : 'unknown';
+      console.log(`[inbox] ${_msgType} remoteJid=${rawJid} senderPn=${msg.key?.senderPn || '-'} fromMe=${msg.key.fromMe} id=${msg.key.id}`);
 
       // WhatsApp Web/Business sometimes reports 1:1 chats as @lid on linked
       // devices. The safest reply target is the exact chat JID where the
