@@ -4572,8 +4572,22 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         // senderPn — when the OWNER types a command in someone else's DM the
         // message is fromMe and senderPn is the OWNER'S own number, which would
         // send the reply to the owner's self-chat instead of the actual chat.
-        console.log(`[lid-fix] keeping @lid reply target: ${rawJid}`);
-        jid = rawJid;
+        console.log(`[lid-fix] raw=${rawJid} senderPn=${senderPn || '-'}`);
+        // ── LID → PN CONVERSION (CRITICAL FOR BAILEYS 6.7.23) ──────────────
+        // Baileys 6.7.23 cannot SEND to @lid JIDs (silently fails or hangs).
+        // Newer Baileys versions auto-convert, but 6.x doesn't.
+        // If the LID's numeric portion looks like a phone number, use that as
+        // the @s.whatsapp.net JID instead. Random-ID LIDs (no phone shape)
+        // fall through as LID — those are rare and only happen for the bot's
+        // OWN self-chat (which is identified via sock.user.id, a PN).
+        if (/^\d{10,15}$/.test(rawJid.split('@')[0].split(':')[0])) {
+          const pnJid = rawJid.split('@')[0].split(':')[0] + '@s.whatsapp.net';
+          console.log(`[lid-fix] CONVERTED LID→PN: ${rawJid} → ${pnJid}`);
+          jid = pnJid;
+        } else {
+          console.log(`[lid-fix] keeping @lid (not phone-shaped): ${rawJid}`);
+          jid = rawJid;
+        }
       }
 
 
