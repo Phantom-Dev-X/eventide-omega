@@ -4573,50 +4573,54 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         // message is fromMe and senderPn is the OWNER'S own number, which would
         // send the reply to the owner's self-chat instead of the actual chat.
         console.log(`[lid-fix] raw=${rawJid} senderPn=${senderPn || '-'}`);
-        // ── SMART LID RESOLUTION (CRITICAL FOR BAILEYS 6.7.23) ──────────────
-        // Baileys 6.7.23 cannot SEND to @lid JIDs — silently fails or hangs.
-        // We must resolve to a PN (@s.whatsapp.net) before sending. Three cases:
+        // ── SMART JID RESOLUTION FOR OUTBOUND REPLIES ──────────────────────
+        // Baileys 6.7.23 sends to PN JIDs but WhatsApp server only delivers
+        // properly when the conversation thread's JID matches the format
+        // WhatsApp uses for routing. Self-chat works because we send to the
+        // bot's OWN PN (which the bot is always listening on). For OTHER
+        // people's DMs arriving as @lid, sending to a bare PN sometimes
+        // succeeds in Baileys but the message doesn't visually arrive because
+        // WhatsApp routes the conversation thread via LID.
         //
-        //   1. SELF-CHAT via LID — WhatsApp sometimes reports self-chat using
-        //      the bot's OWN LID (e.g. 175604737548532:29@lid). The numeric
-        //      portion is a RANDOM ID, not a phone. Sending it to
-        //      @s.whatsapp.net would deliver to a stranger's account.
-        //      Fix: detect self-chat and reply to the bot's OWN PN.
-        //
-        //   2. OTHER PERSON via LID with phone-shaped LID (e.g.
-        //      86170046304392@lid) — the numeric portion IS a phone number.
-        //      Convert to <phone>@s.whatsapp.net.
-        //
-        //   3. OTHER PERSON via random-ID LID (rare) — keep as LID and hope
-        //      Baileys resolves internally. (Won't work in 6.7.23, but
-        //      this case is uncommon.)
+        // Strategy: For OTHER people, keep the LID format and append the bot's
+        // OWN device suffix `:29` so the message routes through the same
+        // device channel as the incoming message. For self-chat, send to the
+        // bot's OWN PN (works as proven by logs).
         const _normJid = (j) => {
           if (!j) return '';
           const parts = String(j).split('@');
-          const user = (parts[0] || '').split(':')[0];  // strip device suffix
+          const user = (parts[0] || '').split(':')[0];
           return `${user}@${parts[1] || ''}`;
         };
         const _cleanRaw    = _normJid(rawJid);
         const _cleanOwnId  = _normJid(sockUserId);
         const _cleanOwnLid = _normJid(sockUserLid);
 
+        // Extract the bot's device number (e.g., ":29" from "2347062047042:29@s.whatsapp.net")
+        const _botDevice = (() => {
+          const m = String(sockUserId || '').match(/:(\d+)/);
+          return m ? `:${m[1]}` : '';
+        })();
+
         if (_cleanOwnId && _cleanRaw === _cleanOwnId) {
-          // CASE 1a: self-chat arriving as PN (most common)
+          // CASE 1a: self-chat arriving as PN
           jid = sockUserId;
           console.log(`[lid-fix] self-chat via PN → sending to OWN PN: ${jid}`);
         } else if (_cleanOwnLid && _cleanRaw === _cleanOwnLid) {
           // CASE 1b: self-chat arriving as bot's OWN LID
           jid = sockUserId;
           console.log(`[lid-fix] self-chat via OWN LID → sending to OWN PN: ${jid}`);
-        } else if (/^\d{10,15}$/.test(rawJid.split('@')[0].split(':')[0])) {
-          // CASE 2: other person's LID is phone-shaped
-          const numPart = rawJid.split('@')[0].split(':')[0];
-          jid = numPart + '@s.whatsapp.net';
-          console.log(`[lid-fix] CONVERTED OTHER LID→PN: ${rawJid} → ${jid}`);
+        } else if (rawJid.endsWith('@lid')) {
+          // CASE 2: OTHER person's DM arrived as @lid.
+          // Keep LID and add the bot's device suffix so the send routes
+          // through the same device channel as the incoming message.
+          const lidNum = rawJid.split('@')[0];
+          jid = lidNum + _botDevice + '@lid';
+          console.log(`[lid-fix] other-DM LID with bot device: ${rawJid} → ${jid}`);
         } else {
-          // CASE 3: random-ID LID for unknown person
-          console.log(`[lid-fix] keeping @lid (random ID, no PN shape): ${rawJid}`);
+          // CASE 3: PN arrived (rare for other DM) — keep as-is
           jid = rawJid;
+          console.log(`[lid-fix] other-DM PN kept as-is: ${jid}`);
         }
       }
 
