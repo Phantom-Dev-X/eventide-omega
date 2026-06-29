@@ -1748,7 +1748,7 @@ function resolveTargetJid(msg, parts) {
 const POLL_CACHE_FILE = 'poll_cache.json';
 let pollCreationCache = {};
 
-// ── LID → PN MAPPING (learned from incoming messages) ──────────────────
+// ── LID → PN MAPPING (learned from incoming messages, persisted to disk) ──
 // WhatsApp sometimes masks the sender's identity as @lid. Baileys 6.7.23
 // cannot SEND to @lid JIDs reliably (messages get stuck as "Waiting for
 // this message" because the encryption session was established under the
@@ -1757,7 +1757,51 @@ let pollCreationCache = {};
 //
 // Self-populating — no manual config. Once a contact sends ANY message,
 // the mapping is learned and future replies to that contact work via PN.
+//
+// PERSISTED to disk so mappings survive Render redeploys. Also backed up
+// to Telegram channel via the existing backupAuthToChannel() flow.
+const LID_MAP_FILE = 'lid_pn_map.json';
 const lidToPnMap = new Map();  // key: '<id>@lid', value: '<phone>@s.whatsapp.net'
+
+function loadLidMap() {
+  try {
+    if (fs.existsSync(LID_MAP_FILE)) {
+      const data = JSON.parse(fs.readFileSync(LID_MAP_FILE, 'utf8'));
+      if (data && typeof data === 'object') {
+        for (const [k, v] of Object.entries(data)) {
+          if (typeof k === 'string' && typeof v === 'string') {
+            lidToPnMap.set(k, v);
+          }
+        }
+        console.log(`[lid-map] ✅ Loaded ${lidToPnMap.size} LID↔PN mappings from disk`);
+      }
+    }
+  } catch (e) {
+    console.log('[lid-map] Failed to load:', e.message);
+  }
+}
+
+function saveLidMap() {
+  try {
+    const data = Object.fromEntries(lidToPnMap);
+    fs.writeFileSync(LID_MAP_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.log('[lid-map] Failed to save:', e.message);
+  }
+}
+
+let _lidMapSaveTimer = null;
+function saveLidMapDebounced() {
+  // Debounce saves — many messages can arrive in burst, no need to write
+  // the file on each one. Coalesce writes within 2s.
+  if (_lidMapSaveTimer) clearTimeout(_lidMapSaveTimer);
+  _lidMapSaveTimer = setTimeout(() => {
+    _lidMapSaveTimer = null;
+    saveLidMap();
+    // Also trigger Telegram backup so the map survives even disk loss
+    backupAuthToChannel().catch(() => {});
+  }, 2000);
+}
 
 function learnLidPnMapping(msg) {
   try {
@@ -1769,7 +1813,8 @@ function learnLidPnMapping(msg) {
     if (lid.endsWith('@lid') && pn.endsWith('@s.whatsapp.net')) {
       if (lidToPnMap.get(lid) !== pn) {
         lidToPnMap.set(lid, pn);
-        console.log(`[lid-map] Learned: ${lid} → ${pn}`);
+        console.log(`[lid-map] Learned: ${lid} → ${pn} (total: ${lidToPnMap.size})`);
+        saveLidMapDebounced();
       }
     }
   } catch (_) { /* ignore */ }
@@ -4344,7 +4389,7 @@ async function backupAuthToChannel(force = false) {
     }
     // Backup essential JSON files that must survive redeploys
     // (covers web accounts, linked numbers, poll cache, menu theme, etc.)
-    const essentialFiles = [USERS_FILE, LINKED_FILE, SESSION_FILE, GROUP_SETTINGS_FILE, WARNINGS_FILE, WELCOME_FILE, SCHEDULE_FILE, POLL_CACHE_FILE, PERSONA_FILE, 'menu_banner.jpg'];
+    const essentialFiles = [USERS_FILE, LINKED_FILE, SESSION_FILE, GROUP_SETTINGS_FILE, WARNINGS_FILE, WELCOME_FILE, SCHEDULE_FILE, POLL_CACHE_FILE, PERSONA_FILE, 'menu_banner.jpg', LID_MAP_FILE];
     let filesAdded = 0;
     for (const f of essentialFiles) {
       if (fs.existsSync(f)) {
@@ -9626,6 +9671,7 @@ async function main() {
   loadWelcome();
   loadSchedules();
   loadLinked();
+  loadLidMap();  // LID↔PN mappings (persisted across redeploys)
   telegramBot = await initTelegram();
 
   const authExists = fs.existsSync(AUTH_DIR) && fs.readdirSync(AUTH_DIR).length > 0;
