@@ -11,7 +11,10 @@ Module._resolveFilename = function (request, ...rest) {
 };
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType } = require('@whiskeysockets/baileys');
-const { wrapSocket } = require('baileys-antiban');
+// NOTE: baileys-antiban was tried but its aggressive rate-limiter flagged
+// legitimate usage as "HIGH risk" and falsely reported temporary bans.
+// We implement minimal LID↔PN canonicalization below instead — no risk
+// monitoring, no rate limits, just the LID mapping fix.
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
 const TelegramBot = require('node-telegram-bot-api');
@@ -1744,6 +1747,33 @@ function resolveTargetJid(msg, parts) {
 // ── Persistent Poll Database (Survives Replit / Server Restarts) ────────
 const POLL_CACHE_FILE = 'poll_cache.json';
 let pollCreationCache = {};
+
+// ── LID → PN MAPPING (learned from incoming messages) ──────────────────
+// WhatsApp sometimes masks the sender's identity as @lid. Baileys 6.7.23
+// cannot SEND to @lid JIDs reliably (messages get stuck as "Waiting for
+// this message" because the encryption session was established under the
+// other form). Fix: when an incoming message arrives with `senderPn`,
+// store the LID→PN mapping. On outgoing sends, convert LID→PN if known.
+//
+// Self-populating — no manual config. Once a contact sends ANY message,
+// the mapping is learned and future replies to that contact work via PN.
+const lidToPnMap = new Map();  // key: '<id>@lid', value: '<phone>@s.whatsapp.net'
+
+function learnLidPnMapping(msg) {
+  try {
+    const senderLid = msg?.key?.participant || msg?.key?.remoteJid;
+    const senderPn = msg?.key?.senderPn;
+    if (!senderLid || !senderPn) return;
+    const lid = String(senderLid);
+    const pn = String(senderPn);
+    if (lid.endsWith('@lid') && pn.endsWith('@s.whatsapp.net')) {
+      if (lidToPnMap.get(lid) !== pn) {
+        lidToPnMap.set(lid, pn);
+        console.log(`[lid-map] Learned: ${lid} → ${pn}`);
+      }
+    }
+  } catch (_) { /* ignore */ }
+}
 
 function loadPollCache() {
   try {
@@ -4540,6 +4570,9 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         return;
       }
 
+      // ── ANTI-REPLAY: message accepted. Learn LID↔PN mapping if available. ──
+      learnLidPnMapping(msg);
+
       socketMsgStore.set(msg);
       const rawJid = msg.key.remoteJid;
       let jid = rawJid;
@@ -4575,18 +4608,15 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         // send the reply to the owner's self-chat instead of the actual chat.
         console.log(`[lid-fix] raw=${rawJid} senderPn=${senderPn || '-'}`);
         // ── SMART JID RESOLUTION FOR OUTBOUND REPLIES ──────────────────────
-        // Baileys 6.7.23 sends to PN JIDs but WhatsApp server only delivers
-        // properly when the conversation thread's JID matches the format
-        // WhatsApp uses for routing. Self-chat works because we send to the
-        // bot's OWN PN (which the bot is always listening on). For OTHER
-        // people's DMs arriving as @lid, sending to a bare PN sometimes
-        // succeeds in Baileys but the message doesn't visually arrive because
-        // WhatsApp routes the conversation thread via LID.
+        // Baileys 6.7.23 cannot SEND to @lid reliably ("Waiting for this
+        // message" stuck messages because the encryption session was set up
+        // under PN). Fix: convert LID to PN before sending. We have three
+        // sources of PN knowledge, tried in order:
+        //   1. Learned mapping (lidToPnMap) — populated from incoming senderPn
+        //   2. Phone-shaped LID — numeric portion looks like a phone number
+        //   3. Random-ID LID — fall back to LID, accept "Waiting..." limitation
         //
-        // Strategy: For OTHER people, keep the LID format and append the bot's
-        // OWN device suffix `:29` so the message routes through the same
-        // device channel as the incoming message. For self-chat, send to the
-        // bot's OWN PN (works as proven by logs).
+        // Self-chat is detected first (always replies to bot's own PN).
         const _normJid = (j) => {
           if (!j) return '';
           const parts = String(j).split('@');
@@ -4597,31 +4627,34 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         const _cleanOwnId  = _normJid(sockUserId);
         const _cleanOwnLid = _normJid(sockUserLid);
 
-        // Extract the bot's device number (e.g., ":29" from "2347062047042:29@s.whatsapp.net")
-        const _botDevice = (() => {
-          const m = String(sockUserId || '').match(/:(\d+)/);
-          return m ? `:${m[1]}` : '';
-        })();
-
         if (_cleanOwnId && _cleanRaw === _cleanOwnId) {
-          // CASE 1a: self-chat arriving as PN
+          // CASE A: self-chat arriving as PN
           jid = sockUserId;
           console.log(`[lid-fix] self-chat via PN → sending to OWN PN: ${jid}`);
         } else if (_cleanOwnLid && _cleanRaw === _cleanOwnLid) {
-          // CASE 1b: self-chat arriving as bot's OWN LID
+          // CASE B: self-chat arriving as bot's OWN LID
           jid = sockUserId;
           console.log(`[lid-fix] self-chat via OWN LID → sending to OWN PN: ${jid}`);
+        } else if (lidToPnMap.has(rawJid)) {
+          // CASE C: OTHER person, mapping learned from their earlier message
+          jid = lidToPnMap.get(rawJid);
+          console.log(`[lid-fix] LID→PN via learned map: ${rawJid} → ${jid}`);
+        } else if (rawJid.endsWith('@lid') &&
+                   /^\d{10,15}$/.test(rawJid.split('@')[0].split(':')[0])) {
+          // CASE D: OTHER person, phone-shaped LID (numeric portion IS a phone)
+          const numPart = rawJid.split('@')[0].split(':')[0];
+          jid = numPart + '@s.whatsapp.net';
+          console.log(`[lid-fix] LID→PN via phone-shape: ${rawJid} → ${jid}`);
         } else if (rawJid.endsWith('@lid')) {
-          // CASE 2: OTHER person's DM arrived as @lid.
-          // Keep LID and add the bot's device suffix so the send routes
-          // through the same device channel as the incoming message.
-          const lidNum = rawJid.split('@')[0];
-          jid = lidNum + _botDevice + '@lid';
-          console.log(`[lid-fix] other-DM LID with bot device: ${rawJid} → ${jid}`);
-        } else {
-          // CASE 3: PN arrived (rare for other DM) — keep as-is
+          // CASE E: random-ID LID, no mapping, no phone shape
+          // Keep as LID — will likely fail with "Waiting for this message"
+          // until the contact sends a message back to populate the mapping.
           jid = rawJid;
-          console.log(`[lid-fix] other-DM PN kept as-is: ${jid}`);
+          console.log(`[lid-fix] random-ID LID kept as-is: ${jid}`);
+        } else {
+          // CASE F: PN arrived (rare for other DM) — keep as-is
+          jid = rawJid;
+          console.log(`[lid-fix] PN kept as-is: ${jid}`);
         }
       }
 
@@ -8270,23 +8303,10 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 120_000,
   });
-  // ── Wrap socket with baileys-antiban middleware ─────────────────────────
-  // Fixes the Baileys 6.7.x LID/PN routing bug where sendMessage to @lid JIDs
-  // succeeds in Baileys but the message doesn't visually deliver because
-  // the encryption session was established under the other form. The wrapper:
-  //   1. Auto-learns LID↔PN mappings from incoming messages (senderPn field)
-  //   2. Auto-canonicalizes outbound sends to PN form when mapping is known
-  //   3. Leaves everything else (ev.on, user, authState, etc.) untouched via
-  //      Object.create inheritance
-  sock = wrapSocket(sock, {
-    jidCanonicalizer: {
-      enabled: true,
-      canonical: 'pn',  // Normalize to phone-number form
-    },
-    // Disable other anti-ban modules by default — we just want LID fixing
-    groupOpGuard: false,
-    legitimacySignals: false,
-  });
+  // ── LID↔PN mapping happens inline in the handler (see [lid-fix] block) ──
+  // No external middleware needed — the lidToPnMap + LID-fix logic in the
+  // messages.upsert handler handles all canonicalization safely without
+  // any rate-limit / risk-monitor that could falsely flag legitimate use.
   if (isMultiSession) {
     activeSockets[socketKey] = { sock, isConnected: false, user: null, authDir, connectedAt: null };
     socketKeyMap.set(sock, socketKey);
@@ -9282,13 +9302,9 @@ app.post('/api/pair', async (req, res) => {
       connectTimeoutMs: 90000,
       defaultQueryTimeoutMs: 120000,
     });
-    // Wrap with baileys-antiban for LID↔PN auto-canonicalization (see main socket)
-    const wrappedSock = wrapSocket(sock, {
-      jidCanonicalizer: { enabled: true, canonical: 'pn' },
-      groupOpGuard: false,
-      legitimacySignals: false,
-    });
-    return { sock: wrappedSock, saveCreds };
+    // LID↔PN mapping handled inline in the messages.upsert handler
+    // (see [lid-fix] block + lidToPnMap above the handler).
+    return { sock, saveCreds };
   };
 
   const finalizeWebPairSuccess = async (sock, tag) => {
