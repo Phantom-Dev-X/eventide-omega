@@ -11,6 +11,7 @@ Module._resolveFilename = function (request, ...rest) {
 };
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType } = require('@whiskeysockets/baileys');
+const { wrapSocket } = require('baileys-antiban');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
 const TelegramBot = require('node-telegram-bot-api');
@@ -8269,6 +8270,23 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 120_000,
   });
+  // ── Wrap socket with baileys-antiban middleware ─────────────────────────
+  // Fixes the Baileys 6.7.x LID/PN routing bug where sendMessage to @lid JIDs
+  // succeeds in Baileys but the message doesn't visually deliver because
+  // the encryption session was established under the other form. The wrapper:
+  //   1. Auto-learns LID↔PN mappings from incoming messages (senderPn field)
+  //   2. Auto-canonicalizes outbound sends to PN form when mapping is known
+  //   3. Leaves everything else (ev.on, user, authState, etc.) untouched via
+  //      Object.create inheritance
+  sock = wrapSocket(sock, {
+    jidCanonicalizer: {
+      enabled: true,
+      canonical: 'pn',  // Normalize to phone-number form
+    },
+    // Disable other anti-ban modules by default — we just want LID fixing
+    groupOpGuard: false,
+    legitimacySignals: false,
+  });
   if (isMultiSession) {
     activeSockets[socketKey] = { sock, isConnected: false, user: null, authDir, connectedAt: null };
     socketKeyMap.set(sock, socketKey);
@@ -9264,7 +9282,13 @@ app.post('/api/pair', async (req, res) => {
       connectTimeoutMs: 90000,
       defaultQueryTimeoutMs: 120000,
     });
-    return { sock, saveCreds };
+    // Wrap with baileys-antiban for LID↔PN auto-canonicalization (see main socket)
+    const wrappedSock = wrapSocket(sock, {
+      jidCanonicalizer: { enabled: true, canonical: 'pn' },
+      groupOpGuard: false,
+      legitimacySignals: false,
+    });
+    return { sock: wrappedSock, saveCreds };
   };
 
   const finalizeWebPairSuccess = async (sock, tag) => {
