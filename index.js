@@ -4573,19 +4573,49 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         // message is fromMe and senderPn is the OWNER'S own number, which would
         // send the reply to the owner's self-chat instead of the actual chat.
         console.log(`[lid-fix] raw=${rawJid} senderPn=${senderPn || '-'}`);
-        // ── LID → PN CONVERSION (CRITICAL FOR BAILEYS 6.7.23) ──────────────
-        // Baileys 6.7.23 cannot SEND to @lid JIDs (silently fails or hangs).
-        // Newer Baileys versions auto-convert, but 6.x doesn't.
-        // If the LID's numeric portion looks like a phone number, use that as
-        // the @s.whatsapp.net JID instead. Random-ID LIDs (no phone shape)
-        // fall through as LID — those are rare and only happen for the bot's
-        // OWN self-chat (which is identified via sock.user.id, a PN).
-        if (/^\d{10,15}$/.test(rawJid.split('@')[0].split(':')[0])) {
-          const pnJid = rawJid.split('@')[0].split(':')[0] + '@s.whatsapp.net';
-          console.log(`[lid-fix] CONVERTED LID→PN: ${rawJid} → ${pnJid}`);
-          jid = pnJid;
+        // ── SMART LID RESOLUTION (CRITICAL FOR BAILEYS 6.7.23) ──────────────
+        // Baileys 6.7.23 cannot SEND to @lid JIDs — silently fails or hangs.
+        // We must resolve to a PN (@s.whatsapp.net) before sending. Three cases:
+        //
+        //   1. SELF-CHAT via LID — WhatsApp sometimes reports self-chat using
+        //      the bot's OWN LID (e.g. 175604737548532:29@lid). The numeric
+        //      portion is a RANDOM ID, not a phone. Sending it to
+        //      @s.whatsapp.net would deliver to a stranger's account.
+        //      Fix: detect self-chat and reply to the bot's OWN PN.
+        //
+        //   2. OTHER PERSON via LID with phone-shaped LID (e.g.
+        //      86170046304392@lid) — the numeric portion IS a phone number.
+        //      Convert to <phone>@s.whatsapp.net.
+        //
+        //   3. OTHER PERSON via random-ID LID (rare) — keep as LID and hope
+        //      Baileys resolves internally. (Won't work in 6.7.23, but
+        //      this case is uncommon.)
+        const _normJid = (j) => {
+          if (!j) return '';
+          const parts = String(j).split('@');
+          const user = (parts[0] || '').split(':')[0];  // strip device suffix
+          return `${user}@${parts[1] || ''}`;
+        };
+        const _cleanRaw    = _normJid(rawJid);
+        const _cleanOwnId  = _normJid(sockUserId);
+        const _cleanOwnLid = _normJid(sockUserLid);
+
+        if (_cleanOwnId && _cleanRaw === _cleanOwnId) {
+          // CASE 1a: self-chat arriving as PN (most common)
+          jid = sockUserId;
+          console.log(`[lid-fix] self-chat via PN → sending to OWN PN: ${jid}`);
+        } else if (_cleanOwnLid && _cleanRaw === _cleanOwnLid) {
+          // CASE 1b: self-chat arriving as bot's OWN LID
+          jid = sockUserId;
+          console.log(`[lid-fix] self-chat via OWN LID → sending to OWN PN: ${jid}`);
+        } else if (/^\d{10,15}$/.test(rawJid.split('@')[0].split(':')[0])) {
+          // CASE 2: other person's LID is phone-shaped
+          const numPart = rawJid.split('@')[0].split(':')[0];
+          jid = numPart + '@s.whatsapp.net';
+          console.log(`[lid-fix] CONVERTED OTHER LID→PN: ${rawJid} → ${jid}`);
         } else {
-          console.log(`[lid-fix] keeping @lid (not phone-shaped): ${rawJid}`);
+          // CASE 3: random-ID LID for unknown person
+          console.log(`[lid-fix] keeping @lid (random ID, no PN shape): ${rawJid}`);
           jid = rawJid;
         }
       }
