@@ -89,6 +89,61 @@ const SESSION_FILE = 'sessions.json';
 // All failures gracefully degrade to a link + metadata message.
 //
 
+// ── TIER 0: LOCAL COBALT (self-hosted on your VPS) ───────────────────────
+// If you set up cobalt on your VPS via setup-cobalt.sh, point the bot at it
+// with these env vars. Local cobalt is the FASTEST and MOST RELIABLE tier
+// because it has a residential/datacenter IP that YouTube won't have blocked.
+// Supports YouTube, TikTok, Instagram, Facebook, Twitter/X, Pinterest,
+// Reddit, Vimeo, SoundCloud, Bluesky, Snapchat, +10 more platforms.
+const COBALT_LOCAL_URL = process.env.COBALT_LOCAL_URL || null;
+const COBALT_LOCAL_KEY = process.env.COBALT_LOCAL_KEY || null;
+
+async function _ph_tryLocalCobalt(url, isAudio) {
+  if (!COBALT_LOCAL_URL) return null;
+  try {
+    const payload = {
+      url,
+      videoQuality: '720',
+      audioFormat: isAudio ? 'mp3' : 'best',
+      filenameStyle: 'classic',
+      downloadMode: isAudio ? 'audio' : 'auto',
+      youtubeVideoCodec: 'h264',
+      alwaysProxy: true,
+      disableMetadata: false,
+    };
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': BROWSER_UA,
+    };
+    if (COBALT_LOCAL_KEY) headers['Authorization'] = `Bearer ${COBALT_LOCAL_KEY}`;
+
+    const buf = await _ph_httpsRequest({
+      hostname: new URL(COBALT_LOCAL_URL).hostname,
+      path: new URL(COBALT_LOCAL_URL).pathname || '/',
+      method: 'POST',
+      headers: { ...headers, 'Content-Length': Buffer.byteLength(JSON.stringify(payload)) },
+      timeout: 60000,  // 60s — cobalt takes time to resolve media
+    }, JSON.stringify(payload));
+
+    let result;
+    try { result = JSON.parse(buf.toString('utf8')); }
+    catch (_) { console.log(`[dl] local cobalt returned non-JSON`); return null; }
+
+    const mediaUrl = result.url || (result.picker && result.picker[0] && result.picker[0].url) || null;
+    const okStatuses = ['tunnel', 'redirect', 'stream'];
+    if (okStatuses.includes(result.status) && mediaUrl) {
+      console.log(`[dl] ✅ local cobalt (${new URL(COBALT_LOCAL_URL).hostname}) → ${result.status}`);
+      return mediaUrl;
+    }
+    console.log(`[dl] ⚠️ local cobalt status=${result.status} err=${JSON.stringify(result.error || result.text || '').slice(0,100)}`);
+  } catch (e) {
+    console.log(`[dl] ⚠️ local cobalt failed: ${e.message?.slice(0, 120)}`);
+  }
+  return null;
+}
+
+// ── TIER 1: PUBLIC COBALT INSTANCES (often blocked on cloud IPs) ───────
 const COBALT_INSTANCES = [
   'https://api.cobalt.tools/api/json',
   'https://co.wuk.sh/api/json',
@@ -6812,7 +6867,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
               `┃  ⏳ *STATUS*  : Processing...\n` +
               `┃  🔗 *SOURCE*  : ${isYT ? 'YouTube' : domain}\n` +
               `┃  🎯 *TARGET*  : ${isAudioCmd ? 'Audio (MP3)' : 'Video'}\n` +
-              `┃  🔄 *TIERS*    : cobalt → piped → yt-dlp → ytdl-core`
+              `┃  🔄 *TIERS*    : local-cobalt → cobalt → piped → yt-dlp → ytdl-core`
             )
           }, quotedOpts(msg));
 
@@ -6823,10 +6878,20 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           let mediaBuffer = null;
           let sourceUsed = null;
 
+          // Tier 0: LOCAL COBALT (self-hosted on VPS — fastest, most reliable)
+          // Setup via setup-cobalt.sh on your VPS, then set COBALT_LOCAL_URL
+          if (COBALT_LOCAL_URL) {
+            console.log(`[dl] Tier 0: local cobalt for ${url.slice(0, 60)}...`);
+            mediaUrl = await _ph_tryLocalCobalt(url, isAudioCmd);
+            if (mediaUrl) sourceUsed = 'local-cobalt';
+          }
+
           // Tier 1: cobalt.tools (tries multiple instances)
-          console.log(`[dl] Tier 1: cobalt for ${url.slice(0, 60)}...`);
-          mediaUrl = await _ph_tryCobalt(url, isAudioCmd);
-          if (mediaUrl) sourceUsed = 'cobalt.tools';
+          if (!mediaUrl) {
+            console.log(`[dl] Tier 1: public cobalt for ${url.slice(0, 60)}...`);
+            mediaUrl = await _ph_tryCobalt(url, isAudioCmd);
+            if (mediaUrl) sourceUsed = 'cobalt.tools';
+          }
 
           // Tier 2: piped.video (YouTube only)
           if (!mediaUrl && isYT) {
