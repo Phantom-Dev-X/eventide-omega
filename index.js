@@ -1903,6 +1903,86 @@ let pollCreationCache = {};
 const LID_MAP_FILE = 'lid_pn_map.json';
 const lidToPnMap = new Map();  // key: '<id>@lid', value: '<phone>@s.whatsapp.net'
 
+// ── DELIVERY TRACKER ────────────────────────────────────────────────────
+// Baileys' sendMessage resolves once the WebSocket frame is sent, but
+// WhatsApp may silently drop the message server-side (the "Waiting for
+// this message" bug). We track every outbound send by msg id, listen for
+// `messages.update` status events, and AUTO-RETRY to LID after a timeout
+// if no delivery ack arrives. This makes "REPLY SENT" actually mean
+// "REPLY DELIVERED" — or we retry once before giving up.
+const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, attempts, sentAt, retried }
+const DELIVERY_TIMEOUT_MS = 8000;     // Wait this long for delivery ack before retrying
+
+function registerPendingDelivery(msgId, jid, text) {
+  if (!msgId) return;
+  pendingDeliveries.set(msgId, {
+    jid,
+    text,
+    attempts: 1,
+    sentAt: Date.now(),
+    retried: false,
+  });
+  // Schedule a timeout check
+  setTimeout(() => {
+    const pending = pendingDeliveries.get(msgId);
+    if (pending) {
+      // Still pending after timeout — retry to LID if we have a mapping
+      handleDeliveryTimeout(msgId, pending).catch(() => {});
+    }
+  }, DELIVERY_TIMEOUT_MS);
+}
+
+async function handleDeliveryTimeout(msgId, pending) {
+  const sock = currentSock;
+  if (!sock) {
+    console.log(`[delivery] ⏰ Timeout — no socket available, skipping retry for ${msgId}`);
+    pendingDeliveries.delete(msgId);
+    return;
+  }
+  console.log(`[delivery] ⏰ Timeout — no delivery ack in ${DELIVERY_TIMEOUT_MS}ms for ${msgId} (target=${pending.jid})`);
+  if (pending.retried) {
+    console.log(`[delivery] ❌ Already retried once — giving up on ${msgId}`);
+    pendingDeliveries.delete(msgId);
+    return;
+  }
+  // Try the LID as fallback (the original incoming format)
+  // The pending.jid is the PN we tried; find the LID equivalent in our map
+  const lidForPn = findLidForPn(pending.jid);
+  if (!lidForPn) {
+    console.log(`[delivery] ❌ No LID mapping found for PN ${pending.jid} — cannot retry`);
+    pendingDeliveries.delete(msgId);
+    return;
+  }
+  pending.retried = true;
+  try {
+    const retryMsg = await sock.sendMessage(lidForPn, { text: pending.text });
+    console.log(`[delivery] 🔄 RETRY to LID ${lidForPn} — new msgId=${retryMsg?.key?.id}`);
+    if (retryMsg?.key?.id) {
+      registerPendingDelivery(retryMsg.key.id, lidForPn, pending.text);
+    }
+  } catch (e) {
+    console.log(`[delivery] ❌ LID retry failed: ${e.message}`);
+    pendingDeliveries.delete(msgId);
+  }
+}
+
+function markDelivered(msgId) {
+  const pending = pendingDeliveries.get(msgId);
+  if (pending) {
+    const elapsed = Date.now() - pending.sentAt;
+    console.log(`[delivery] ✅ Msg ${msgId} delivered to ${pending.jid} in ${elapsed}ms`);
+    pendingDeliveries.delete(msgId);
+  }
+}
+
+function findLidForPn(pnJid) {
+  // Reverse lookup in lidToPnMap
+  for (const [lid, pn] of lidToPnMap.entries()) {
+    if (pn === pnJid) return lid;
+  }
+  return null;
+}
+
 function loadLidMap() {
   try {
     if (fs.existsSync(LID_MAP_FILE)) {
@@ -5628,8 +5708,12 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
    " *An echo in the void is*
      *the only proof you exist* ."`;
         try {
-          await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, quotedOpts(msg));
-          console.log(`[flow] ✅ .ping REPLY SENT to ${jid}`);
+          const sentMsg = await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, quotedOpts(msg));
+          console.log(`[flow] ✅ .ping REPLY SENT to ${jid} (msgId=${sentMsg?.key?.id})`);
+          // Track for delivery — auto-retry to LID if no ack in 8s
+          if (sentMsg?.key?.id) {
+            registerPendingDelivery(sentMsg.key.id, jid, buildOmegaTerminal(body));
+          }
         } catch (e) {
           console.log(`[flow] ❌ .ping REPLY FAILED to ${jid}: ${e.message}`);
         }
@@ -8602,6 +8686,19 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   sock.ev.on('messages.update', async (updates) => {
     try {
       for (const { key, update } of updates) {
+        // ── DELIVERY ACK: track status changes for outbound sends ──
+        // WhatsApp sends back status updates via messages.update:
+        //   status 1 = error, 2 = sent (server received), 3 = delivered, 4 = read
+        if (key?.id && pendingDeliveries.has(key.id) && update?.status != null) {
+          // status 2+ = at least server received
+          if (update.status >= 2) markDelivered(key.id);
+          // status 1 = error
+          if (update.status === 1) {
+            console.log(`[delivery] ❌ Msg ${key.id} errored on server side`);
+            pendingDeliveries.delete(key.id);
+          }
+        }
+
         if (!update?.pollUpdates) continue;
 
         // Check if this is one of our menu polls
