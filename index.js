@@ -145,7 +145,8 @@ async function _ph_tryLocalCobalt(url, isAudio) {
 
 // ── TIER 1: PUBLIC COBALT INSTANCES (often blocked on cloud IPs) ───────
 const COBALT_INSTANCES = [
-  'https://api.cobalt.tools/api/json',
+  'https://api.cobalt.tools/',            // v7 format (POST / with new schema)
+  'https://api.cobalt.tools/api/json',    // legacy format (POST /api/json with old schema)
   'https://co.wuk.sh/api/json',
   'https://cobalt-api.kavin.rocks/api/json',
   'https://api.cobalt-7.wireway.ch/api/json'
@@ -236,6 +237,90 @@ function _ph_httpsRequest(opts, postBody) {
     if (postBody) req.write(postBody);
     req.end();
   });
+}
+
+// ── Detect platform from URL ────────────────────────────────────────────
+function _ph_detectPlatform(url) {
+  const u = String(url || '').toLowerCase();
+  if (/(?:youtube\.com|youtu\.be|yt\.be|ytmusic\.com|music\.youtube\.com)/.test(u)) return 'youtube';
+  if (/(?:tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/.test(u)) return 'tiktok';
+  if (/(?:instagram\.com|instagr\.am)/.test(u)) return 'instagram';
+  if (/(?:facebook\.com|fb\.watch|fb\.com)/.test(u)) return 'facebook';
+  if (/(?:twitter\.com|x\.com|t\.co)/.test(u)) return 'twitter';
+  if (/(?:soundcloud\.com|sc\.com)/.test(u)) return 'soundcloud';
+  if (/(?:pinterest\.com|pin\.it)/.test(u)) return 'pinterest';
+  if (/(?:reddit\.com|redd\.it)/.test(u)) return 'reddit';
+  if (/(?:tumblr\.com)/.test(u)) return 'tumblr';
+  if (/(?:vimeo\.com)/.test(u)) return 'vimeo';
+  if (/(?:twitch\.tv)/.test(u)) return 'twitch';
+  return 'generic';
+}
+
+// ── TIER 0: TIKWM (TikTok HD no-watermark, free, no key) ────────────────
+// Most reliable for TikTok — has its own infrastructure that bypasses
+// TikTok's anti-bot. Always returns hdplay (HD no-watermark) or play
+// (SD no-watermark). NEVER uses wmplay (watermark).
+async function _ph_tryTikwm(url) {
+  try {
+    const u = new URL('https://www.tikwm.com/api/');
+    u.searchParams.set('url', url);
+    u.searchParams.set('hd', '1');
+    const buf = await _ph_httpsRequest({
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: { 'User-Agent': BROWSER_UA, 'Accept': 'application/json' },
+      timeout: 30000,
+    });
+    let data;
+    try { data = JSON.parse(buf.toString('utf8')); }
+    catch (_) { console.log(`[dl] ⚠️ tikwm returned non-JSON`); return null; }
+    if (!data || data.code !== 0 || !data.data) {
+      console.log(`[dl] ⚠️ tikwm: ${data?.msg || 'empty data'}`);
+      return null;
+    }
+    const d = data.data;
+    // Prefer HD no-watermark, fall back to SD no-watermark
+    const v = d.hdplay || d.play;
+    if (!v) { console.log(`[dl] ⚠️ tikwm: no playable video`); return null; }
+    console.log(`[dl] ✅ tikwm → ${d.hdplay ? 'HD' : 'SD'} no-watermark`);
+    return { type: 'video', url: v, title: d.title, thumb: d.cover };
+  } catch (e) {
+    console.log(`[dl] ⚠️ tikwm failed: ${e.message?.slice(0, 120)}`);
+    return null;
+  }
+}
+
+// ── TIER 1: LOCOLOADER (TikTok/Instagram fallback, free, no key) ────────
+// Secondary fallback for TikTok + Instagram. Different infra from tikwm
+// so if one is down the other usually works.
+async function _ph_tryLocoloader(url) {
+  try {
+    const u = new URL('https://locoloader.com/api/v2/social');
+    u.searchParams.set('url', url);
+    const buf = await _ph_httpsRequest({
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: { 'User-Agent': BROWSER_UA, 'Accept': 'application/json' },
+      timeout: 25000,
+    });
+    let data;
+    try { data = JSON.parse(buf.toString('utf8')); }
+    catch (_) { console.log(`[dl] ⚠️ locoloader returned non-JSON`); return null; }
+    if (!data || data.error) {
+      console.log(`[dl] ⚠️ locoloader: ${data?.message || 'error'}`);
+      return null;
+    }
+    if (data.video) { console.log(`[dl] ✅ locoloader → video`); return { type: 'video', url: data.video, title: data.title }; }
+    if (data.image) { console.log(`[dl] ✅ locoloader → image`); return { type: 'image', url: data.image, title: data.title }; }
+    if (data.audio) { console.log(`[dl] ✅ locoloader → audio`); return { type: 'audio', url: data.audio, title: data.title }; }
+    console.log(`[dl] ⚠️ locoloader: no media in response`);
+    return null;
+  } catch (e) {
+    console.log(`[dl] ⚠️ locoloader failed: ${e.message?.slice(0, 120)}`);
+    return null;
+  }
 }
 
 // Tier 1: cobalt.tools — tries multiple instances, returns media URL or null
@@ -6867,7 +6952,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
               `┃  ⏳ *STATUS*  : Processing...\n` +
               `┃  🔗 *SOURCE*  : ${isYT ? 'YouTube' : domain}\n` +
               `┃  🎯 *TARGET*  : ${isAudioCmd ? 'Audio (MP3)' : 'Video'}\n` +
-              `┃  🔄 *TIERS*    : local-cobalt → cobalt → piped → yt-dlp → ytdl-core`
+              `┃  🔄 *TIERS*    : tikwm → locoloader → local-cobalt → cobalt → piped → yt-dlp → ytdl-core`
             )
           }, quotedOpts(msg));
 
@@ -6878,39 +6963,54 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           let mediaBuffer = null;
           let sourceUsed = null;
 
-          // Tier 0: LOCAL COBALT (self-hosted on VPS — fastest, most reliable)
-          // Setup via setup-cobalt.sh on your VPS, then set COBALT_LOCAL_URL
-          if (COBALT_LOCAL_URL) {
-            console.log(`[dl] Tier 0: local cobalt for ${url.slice(0, 60)}...`);
+          // Tier 0: TIKWM (TikTok HD no-watermark, free, no key) — best for TikTok
+          // From Phantom-x repo — proven to work on cloud IPs (Render, Railway, etc.)
+          const platform = _ph_detectPlatform(url);
+          if (platform === 'tiktok' && !mediaUrl) {
+            console.log(`[dl] Tier 0: tikwm for ${url.slice(0, 60)}...`);
+            const r = await _ph_tryTikwm(url);
+            if (r?.url) { mediaUrl = r.url; sourceUsed = 'tikwm'; }
+          }
+
+          // Tier 1: LOCOLOADER (TikTok + Instagram fallback, free, no key)
+          if (!mediaUrl && (platform === 'tiktok' || platform === 'instagram')) {
+            console.log(`[dl] Tier 1: locoloader for ${url.slice(0, 60)}...`);
+            const r = await _ph_tryLocoloader(url);
+            if (r?.url) { mediaUrl = r.url; sourceUsed = 'locoloader'; }
+          }
+
+          // Tier 2: LOCAL COBALT (self-hosted on VPS — fastest, most reliable)
+          if (!mediaUrl && COBALT_LOCAL_URL) {
+            console.log(`[dl] Tier 2: local cobalt for ${url.slice(0, 60)}...`);
             mediaUrl = await _ph_tryLocalCobalt(url, isAudioCmd);
             if (mediaUrl) sourceUsed = 'local-cobalt';
           }
 
-          // Tier 1: cobalt.tools (tries multiple instances)
+          // Tier 3: cobalt.tools (public instances, often blocked on cloud IPs)
           if (!mediaUrl) {
-            console.log(`[dl] Tier 1: public cobalt for ${url.slice(0, 60)}...`);
+            console.log(`[dl] Tier 3: public cobalt for ${url.slice(0, 60)}...`);
             mediaUrl = await _ph_tryCobalt(url, isAudioCmd);
             if (mediaUrl) sourceUsed = 'cobalt.tools';
           }
 
-          // Tier 2: piped.video (YouTube only)
+          // Tier 4: piped.video (YouTube only)
           if (!mediaUrl && isYT) {
-            console.log(`[dl] Tier 2: piped for ${videoId}`);
+            console.log(`[dl] Tier 4: piped for ${videoId}`);
             mediaUrl = await _ph_tryPiped(videoId, isAudioCmd);
             if (mediaUrl) sourceUsed = 'piped.video';
           }
 
-          // Tier 3: yt-dlp subprocess (YouTube + TikTok + IG + FB + X + Pinterest)
+          // Tier 5: yt-dlp subprocess (YouTube + TikTok + IG + FB + X + Pinterest)
           // Most reliable — handles share URLs like vm.tiktok.com and youtu.be
           if (!mediaUrl) {
-            console.log(`[dl] Tier 3: yt-dlp for ${url.slice(0, 60)}...`);
+            console.log(`[dl] Tier 5: yt-dlp for ${url.slice(0, 60)}...`);
             mediaBuffer = await _ph_tryYtDlp(url, isAudioCmd);
             if (mediaBuffer) sourceUsed = 'yt-dlp';
           }
 
-          // Tier 4: ytdl-core (YouTube only — legacy fallback)
+          // Tier 6: ytdl-core (YouTube only — legacy fallback)
           if (!mediaUrl && !mediaBuffer && isYT) {
-            console.log(`[dl] Tier 4: ytdl-core for ${url.slice(0, 60)}...`);
+            console.log(`[dl] Tier 6: ytdl-core for ${url.slice(0, 60)}...`);
             mediaBuffer = await _ph_tryYtdlCore(url, isAudioCmd);
             if (mediaBuffer) sourceUsed = 'ytdl-core';
           }
