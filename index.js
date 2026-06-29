@@ -5737,7 +5737,64 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       }
 
       if (lower === '.help') {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n.acccheck — check if this is Business or Normal account\n\nMore coming.') }, quotedOpts(msg));
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.send <number> [text] — send msg to a number (owner only)\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n.acccheck — check if this is Business or Normal account\n\nMore coming.') }, quotedOpts(msg));
+        return;
+      }
+
+      // ── .send <number> [text] — send a message to any number (owner only) ──
+      if (lower === '.send' || lower.startsWith('.send ')) {
+        if (!senderIsOwner) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('🔒 *ACCESS_DENIED*\n\n   only the sovereign may\n   command the void to\n   deliver messages.') }, quotedOpts(msg));
+          return;
+        }
+        const sendArgs = text.slice(5).trim();
+        // Try to extract number and optional message
+        // Formats accepted: ".send 2349029675308", ".send 2349029675308 hello world"
+        const sendMatch = sendArgs.match(/^(\+?\d{7,15})\s*(.*)$/s);
+        if (!sendMatch) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(
+            `📤 *SEND COMMAND*\n\n` +
+            `*Usage:*\n` +
+            `  .send <number>          — send default ping\n` +
+            `  .send <number> <text>   — send custom text\n\n` +
+            `*Examples:*\n` +
+            `  .send 2349029675308\n` +
+            `  .send +1 555 123 4567 Hello from Eventide Omega\n\n` +
+            `*Notes:*\n` +
+            `  • Owner-only command\n` +
+            `  • Sends from the bot's WhatsApp account\n` +
+            `  • Number must include country code (no + needed)\n` +
+            `  • Delivery tracked — retry to LID if first send fails`
+          ) }, quotedOpts(msg));
+          return;
+        }
+        const sendNum = normalizeNum(sendMatch[1]);
+        const sendText = sendMatch[2].trim() || `            — *E V E N T I D E · O M E G A* —\n\n   ⚡ *SIGNAL*\n\n   " *An echo in the void is*\n     *the only proof you exist* ."\n\n   📡 _Sent via Phantom-X_`;
+        const sendJid = sendNum + '@s.whatsapp.net';
+        if (!/^\d{10,15}$/.test(sendNum)) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(
+            `❌ *Invalid number*\n\n   "${sendMatch[1]}" no be valid.\n   Use country code without +\n   e.g. 2349029675308`
+          ) }, quotedOpts(msg));
+          return;
+        }
+        try {
+          const sentMsg = await sock.sendMessage(sendJid, { text: sendText });
+          console.log(`[send] ✅ Sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
+          if (sentMsg?.key?.id) registerPendingDelivery(sentMsg.key.id, sendJid, sendText);
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(
+            `📤 *SENT*\n\n` +
+            `   🎯 *TO*     : ${sendNum}\n` +
+            `   📨 *MSG ID* : ${sentMsg?.key?.id || 'pending'}\n` +
+            `   📝 *PREVIEW*:\n` +
+            `   ${sendText.slice(0, 200)}${sendText.length > 200 ? '...' : ''}\n\n` +
+            `   ⏳ _Waiting for delivery ack (will auto-retry to LID if dropped)_`
+          ) }, quotedOpts(msg));
+        } catch (e) {
+          console.log(`[send] ❌ Failed: ${e.message}`);
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(
+            `❌ *SEND FAILED*\n\n   ${e.message}`
+          ) }, quotedOpts(msg));
+        }
         return;
       }
 
@@ -8500,7 +8557,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       if (lower.startsWith(".") && lower !== ".testbiz") {
         // Check if this is a known command missing arguments (not an unknown command)
         const cmdWord = lower.split(/\s+/)[0];
-        const knownCmds = ['.menu','.eclipse','.astraea','.phantom','.ping','.uptime','.status','.owner','.dev','.help','.acccheck','.kill','.mode','.vv','.xx','.vtn','.new','.block','.unblock','.blocklist','.join','.leave','.broadcast','.getpp','.getgpp','.chatinfo','.groups','.setname','.setbio','.setpp','.setmenupic','.delmenupic','.setalias','.delalias','.aliaslist','.prefix','.autoreact','.persona','.restart','.relink','.pair','.telegram.pair','.kick','.add','.promote','.demote','.setgname','.setgdesc','.setgpp','.lock','.unlock','.link','.revoke','.tagall','.everyone','.all','.hidetag','.ht','.membercount','.antilink','.antispam','.antimention','.antidelete','.antibot','.antibug','.warn','.warnlist','.resetwarn','.welcome','.setwelcome','.goodbye','.setgoodbye','.schedule','.unschedule','.schedules','.joke','.fact','.quote','.roast','.compliment','.ship','.rate','.vibe','.8ball','.flip','.roll','.dare','.truth','.rps','.dl','.yt','.ytmp3','.play','.lyrics','.tiktok','.ig','.fb','.x','.pin','.translate','.weather','.calc','.genpwd','.base64','.removebg','.sticker','.s','.toimg','.tts','.voice','.tovn','.qr','.blur','.invert','.grayscale','.brighten','.darken','.sharpen','.pixelate'];
+        const knownCmds = ['.menu','.eclipse','.astraea','.phantom','.ping','.send','.uptime','.status','.owner','.dev','.help','.acccheck','.kill','.mode','.vv','.xx','.vtn','.new','.block','.unblock','.blocklist','.join','.leave','.broadcast','.getpp','.getgpp','.chatinfo','.groups','.setname','.setbio','.setpp','.setmenupic','.delmenupic','.setalias','.delalias','.aliaslist','.prefix','.autoreact','.persona','.restart','.relink','.pair','.telegram.pair','.kick','.add','.promote','.demote','.setgname','.setgdesc','.setgpp','.lock','.unlock','.link','.revoke','.tagall','.everyone','.all','.hidetag','.ht','.membercount','.antilink','.antispam','.antimention','.antidelete','.antibot','.antibug','.warn','.warnlist','.resetwarn','.welcome','.setwelcome','.goodbye','.setgoodbye','.schedule','.unschedule','.schedules','.joke','.fact','.quote','.roast','.compliment','.ship','.rate','.vibe','.8ball','.flip','.roll','.dare','.truth','.rps','.dl','.yt','.ytmp3','.play','.lyrics','.tiktok','.ig','.fb','.x','.pin','.translate','.weather','.calc','.genpwd','.base64','.removebg','.sticker','.s','.toimg','.tts','.voice','.tovn','.qr','.blur','.invert','.grayscale','.brighten','.darken','.sharpen','.pixelate'];
         if (knownCmds.includes(cmdWord)) {
           await sock.sendMessage(jid, { text: `⚠️ *${cmdWord}* requires arguments.\n\nType *.help* or select a menu for usage info.` }, quotedOpts(msg));
         } else {
@@ -9953,14 +10010,64 @@ async function main() {
   loadSchedules();
   loadLinked();
   loadLidMap();  // LID↔PN mappings (persisted across redeploys)
-  telegramBot = await initTelegram();
+
+  // ── Telegram init with retry (handles transient EFATAL/Network errors) ──
+  let telegramReady = false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      telegramBot = await initTelegram();
+      if (telegramBot) {
+        telegramReady = true;
+        console.log(`[boot] ✅ Telegram ready (attempt ${attempt}/3)`);
+        break;
+      }
+    } catch (e) {
+      console.log(`[boot] ⚠️ Telegram init failed (attempt ${attempt}/3): ${e.message?.slice(0, 100)}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 15000 * attempt));  // backoff
+    }
+  }
+  if (!telegramReady) {
+    console.log('[boot] ⚠️ Telegram not available — bot will operate without /pair interface');
+    console.log('[boot]    Will retry Telegram every 60s in background');
+    // Background retry loop
+    const telegramRetryInterval = setInterval(async () => {
+      if (telegramBot) return;  // already up
+      try {
+        telegramBot = await initTelegram();
+        if (telegramBot) {
+          clearInterval(telegramRetryInterval);
+          console.log('[boot] ✅ Telegram recovered via background retry');
+          // Try restore now if we didn't before
+          if (!_ph_isAuthComplete(AUTH_DIR) && TELEGRAM_BACKUP_CHANNEL) {
+            console.log('[boot] Now attempting restore from Telegram channel...');
+            try { await restoreAuthFromChannel(); } catch (_) {}
+          }
+        }
+      } catch (_) { /* keep retrying */ }
+    }, 60000);
+  }
 
   const authExists = fs.existsSync(AUTH_DIR) && fs.readdirSync(AUTH_DIR).length > 0;
   const dataExists = fs.existsSync(USERS_FILE);
-  if ((!authExists || !dataExists) && TELEGRAM_BACKUP_CHANNEL) {
+  if ((!authExists || !dataExists) && TELEGRAM_BACKUP_CHANNEL && telegramReady) {
     console.log(`[boot] Restore needed — auth=${authExists}, data=${dataExists}. Trying Telegram channel...`);
-    const restored = await restoreAuthFromChannel();
-    console.log(restored ? '[boot] ✅ Full restore from channel complete' : '[boot] No channel backup available');
+    // Restore with retry
+    let restored = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        restored = await restoreAuthFromChannel();
+        if (restored) {
+          console.log(`[boot] ✅ Full restore from channel complete (attempt ${attempt}/3)`);
+          break;
+        } else {
+          console.log(`[boot] No backup found in pinned message (attempt ${attempt}/3)`);
+        }
+      } catch (e) {
+        console.log(`[boot] ⚠️ Restore failed (attempt ${attempt}/3): ${e.message?.slice(0, 100)}`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 10000 * attempt));
+      }
+    }
+    if (!restored) console.log('[boot] ⚠️ No valid backup restored — bot will need manual /pair');
   }
 
   migrateLegacyPollCache();
