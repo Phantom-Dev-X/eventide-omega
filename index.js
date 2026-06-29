@@ -4649,6 +4649,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
       // ── KILL SWITCH: .kill is the ONLY command that works when killed ──
       const senderIsOwner = isOwnerJid(msg.key.participant || msg.key.remoteJid, sock) || msg.key.fromMe;
+      console.log(`[flow] after-skip owner=${ownerNum} senderIsOwner=${senderIsOwner} lower=${lower}`);
       if (lower === '.kill' && senderIsOwner) {
         const wasKilled = getUserKilled(ownerNum);
         const nowKilled = !wasKilled;
@@ -4682,6 +4683,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
       // ── MODE GATE: In private mode, only the owner can use commands ──
       const currentMode = getSessionMode(ownerNum);
+      console.log(`[flow] mode=${currentMode} senderIsOwner=${senderIsOwner} → ${(currentMode === 'private' && !senderIsOwner && text.startsWith('.')) ? 'BLOCKED ❌' : 'ALLOWED ✅'}`);
       if (currentMode === 'private' && !senderIsOwner && text.startsWith('.')) {
         console.log(`[mode] ⛔ Private mode — blocked ${msg.key.participant || msg.key.remoteJid} from using ${text.slice(0,20)}`);
         return; // Silently ignore — don't even tell them
@@ -5326,6 +5328,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       }
 
       if (lower === '.ping') {
+        console.log(`[flow] → .ping handler reached, jid=${jid}`);
         const now = Date.now();
         const latency = msg.messageTimestamp ? Math.max(0, Math.floor(now - (msg.messageTimestamp * 1000))) : 0;
         const resonance = isConnected ? (latency < 500 ? 'STABLE' : 'MODERATE') : 'DEGRADED';
@@ -5338,7 +5341,12 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
    " *An echo in the void is*
      *the only proof you exist* ."`;
-        await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, quotedOpts(msg));
+        try {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(body) }, quotedOpts(msg));
+          console.log(`[flow] ✅ .ping REPLY SENT to ${jid}`);
+        } catch (e) {
+          console.log(`[flow] ❌ .ping REPLY FAILED to ${jid}: ${e.message}`);
+        }
         return;
       }
 
