@@ -1913,11 +1913,12 @@ const lidToPnMap = new Map();  // key: '<id>@lid', value: '<phone>@s.whatsapp.ne
 const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, attempts, sentAt, retried }
 const DELIVERY_TIMEOUT_MS = 8000;     // Wait this long for delivery ack before retrying
 
-function registerPendingDelivery(msgId, jid, text) {
+function registerPendingDelivery(msgId, jid, text, sock) {
   if (!msgId) return;
   pendingDeliveries.set(msgId, {
     jid,
     text,
+    sock,        // CRITICAL: pass the socket so retry can use the same one
     attempts: 1,
     sentAt: Date.now(),
     retried: false,
@@ -1933,9 +1934,10 @@ function registerPendingDelivery(msgId, jid, text) {
 }
 
 async function handleDeliveryTimeout(msgId, pending) {
-  const sock = currentSock;
-  if (!sock) {
-    console.log(`[delivery] ⏰ Timeout — no socket available, skipping retry for ${msgId}`);
+  const sock = pending.sock;
+  // Check socket is still alive (sock.user is set when connected)
+  if (!sock || !sock.user) {
+    console.log(`[delivery] ⏰ Timeout — socket disconnected or unavailable for ${msgId} (target=${pending.jid})`);
     pendingDeliveries.delete(msgId);
     return;
   }
@@ -1958,7 +1960,8 @@ async function handleDeliveryTimeout(msgId, pending) {
     const retryMsg = await sock.sendMessage(lidForPn, { text: pending.text });
     console.log(`[delivery] 🔄 RETRY to LID ${lidForPn} — new msgId=${retryMsg?.key?.id}`);
     if (retryMsg?.key?.id) {
-      registerPendingDelivery(retryMsg.key.id, lidForPn, pending.text);
+      // Pass the SAME socket for the retry too
+      registerPendingDelivery(retryMsg.key.id, lidForPn, pending.text, sock);
     }
   } catch (e) {
     console.log(`[delivery] ❌ LID retry failed: ${e.message}`);
@@ -5712,7 +5715,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           console.log(`[flow] ✅ .ping REPLY SENT to ${jid} (msgId=${sentMsg?.key?.id})`);
           // Track for delivery — auto-retry to LID if no ack in 8s
           if (sentMsg?.key?.id) {
-            registerPendingDelivery(sentMsg.key.id, jid, buildOmegaTerminal(body));
+            registerPendingDelivery(sentMsg.key.id, jid, buildOmegaTerminal(body), sock);
           }
         } catch (e) {
           console.log(`[flow] ❌ .ping REPLY FAILED to ${jid}: ${e.message}`);
@@ -5780,7 +5783,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         try {
           const sentMsg = await sock.sendMessage(sendJid, { text: sendText });
           console.log(`[send] ✅ Sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
-          if (sentMsg?.key?.id) registerPendingDelivery(sentMsg.key.id, sendJid, sendText);
+          if (sentMsg?.key?.id) registerPendingDelivery(sentMsg.key.id, sendJid, sendText, sock);
           await sock.sendMessage(jid, { text: buildOmegaTerminal(
             `📤 *SENT*\n\n` +
             `   🎯 *TO*     : ${sendNum}\n` +
