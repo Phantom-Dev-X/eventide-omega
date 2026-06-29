@@ -1919,10 +1919,11 @@ async function handleDeliveryTimeout(msgId, pending) {
 
   // Try multiple fallback strategies in order (NO PN-from-LID guessing):
   // 1. If pending.jid is PN, find mapped LID and retry there
-  // 2. If pending.jid is LID, try with explicit device suffix (`:0` primary, `:29` bot)
+  // 2. If pending.jid is LID, try recipient's primary device (`:0`)
   // NOTE: We do NOT construct PN from LID — that's guessing which can route
   // to a wrong contact. Only retries with mapped data are safe.
   const tried = [];
+  let hardErrorEncountered = false;
   const tryOne = async (target, label) => {
     if (!target || tried.includes(target)) return false;
     tried.push(target);
@@ -1934,7 +1935,13 @@ async function handleDeliveryTimeout(msgId, pending) {
         return true;
       }
     } catch (e) {
-      console.log(`[delivery] ⚠️ RETRY[${label}] failed: ${e.message?.slice(0,80)}`);
+      const errMsg = e.message?.slice(0, 80) || 'unknown';
+      console.log(`[delivery] ⚠️ RETRY[${label}] failed: ${errMsg}`);
+      // 'not-acceptable' / 'bad-request' means the JID format is wrong —
+      // bail out immediately, more retries won't help.
+      if (/not-acceptable|bad-request|invalid/i.test(errMsg)) {
+        hardErrorEncountered = true;
+      }
     }
     return false;
   };
@@ -1955,19 +1962,22 @@ async function handleDeliveryTimeout(msgId, pending) {
     if (okPn0) return;
   }
 
-  // Strategy 2: original was LID — try with explicit device suffixes
+  // Strategy 2: original was LID — try recipient's primary device (`:0`)
+  // We deliberately do NOT try `:29` (bot's device) because that triggers
+  // a 'not-acceptable' error from Baileys for most recipients.
   if (pending.jid.endsWith('@lid')) {
     const lidNum = pending.jid.split('@')[0].split(':')[0];
-    // Try with bot's own device number (`:29`) — same channel as incoming
-    const ok29 = await tryOne(`${lidNum}:29@lid`, 'LID:29');
-    if (ok29) return;
     // Try with primary device (`:0`) — recipient's main phone
     const ok0 = await tryOne(`${lidNum}:0@lid`, 'LID:0');
     if (ok0) return;
   }
 
   // All retries exhausted
-  console.log(`[delivery] ❌ All ${tried.length} retry strategies failed for ${msgId}`);
+  if (hardErrorEncountered) {
+    console.log(`[delivery] ❌ Hard error encountered — JID format invalid, no point retrying`);
+  } else {
+    console.log(`[delivery] ❌ All ${tried.length} retry strategies failed for ${msgId}`);
+  }
   console.log(`[delivery]    💡 Tip: have the contact send a message first — refreshes the encryption session`);
   pendingDeliveries.delete(msgId);
 }
