@@ -1917,10 +1917,11 @@ async function handleDeliveryTimeout(msgId, pending) {
   }
   pending.retried = true;
 
-  // Try multiple fallback strategies in order:
+  // Try multiple fallback strategies in order (NO PN-from-LID guessing):
   // 1. If pending.jid is PN, find mapped LID and retry there
   // 2. If pending.jid is LID, try with explicit device suffix (`:0` primary, `:29` bot)
-  // 3. If pending.jid is LID and looks phone-shaped, try constructed PN
+  // NOTE: We do NOT construct PN from LID — that's guessing which can route
+  // to a wrong contact. Only retries with mapped data are safe.
   const tried = [];
   const tryOne = async (target, label) => {
     if (!target || tried.includes(target)) return false;
@@ -1945,6 +1946,13 @@ async function handleDeliveryTimeout(msgId, pending) {
       const ok = await tryOne(lidForPn, 'PN→LID');
       if (ok) return;
     }
+    // No LID mapping — try PN with explicit device suffixes
+    // (sometimes the bot needs to specify a device to reach the recipient)
+    const pnNum = pending.jid.split('@')[0].split(':')[0];
+    const okPn29 = await tryOne(`${pnNum}:29@s.whatsapp.net`, 'PN:29');
+    if (okPn29) return;
+    const okPn0 = await tryOne(`${pnNum}:0@s.whatsapp.net`, 'PN:0');
+    if (okPn0) return;
   }
 
   // Strategy 2: original was LID — try with explicit device suffixes
@@ -1958,17 +1966,9 @@ async function handleDeliveryTimeout(msgId, pending) {
     if (ok0) return;
   }
 
-  // Strategy 3: if LID looks phone-shaped, construct a PN and try
-  if (pending.jid.endsWith('@lid')) {
-    const lidNum = pending.jid.split('@')[0].split(':')[0];
-    if (/^\d{10,15}$/.test(lidNum)) {
-      const okPn = await tryOne(`${lidNum}@s.whatsapp.net`, 'LID→PN');
-      if (okPn) return;
-    }
-  }
-
   // All retries exhausted
   console.log(`[delivery] ❌ All ${tried.length} retry strategies failed for ${msgId}`);
+  console.log(`[delivery]    💡 Tip: have the contact send a message first — refreshes the encryption session`);
   pendingDeliveries.delete(msgId);
 }
 
@@ -5392,6 +5392,12 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           return;
         }
         try {
+          // Diagnostic logging — helps us see exactly what state the bot is in
+          const myJid = sock.user?.id ? String(sock.user.id) : 'NOT-CONNECTED';
+          const myLid = sock.user?.lid ? String(sock.user.lid) : 'NO-LID';
+          console.log(`[send] 📤 Sending from ${myJid} (LID: ${myLid}) to ${sendJid}`);
+          console.log(`[send]    isConnected=${isConnected}, sock.user=${!!sock.user}`);
+
           const sentMsg = await sock.sendMessage(sendJid, { text: sendText });
           console.log(`[send] ✅ Sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
           if (sentMsg?.key?.id) registerPendingDelivery(sentMsg.key.id, sendJid, sendText, sock);
@@ -5401,12 +5407,21 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
             `   📨 *MSG ID* : ${sentMsg?.key?.id || 'pending'}\n` +
             `   📝 *PREVIEW*:\n` +
             `   ${sendText.slice(0, 200)}${sendText.length > 200 ? '...' : ''}\n\n` +
-            `   ⏳ _Waiting for delivery ack (will auto-retry to LID if dropped)_`
+            `   ⏳ _Waiting for delivery ack_\n` +
+            `   🔄 _Auto-retry on timeout_\n` +
+            `   💡 _Tip: if contact never received, ask them to message this number first to refresh the session_`
           ) }, quotedOpts(msg));
         } catch (e) {
           console.log(`[send] ❌ Failed: ${e.message}`);
+          console.log(`[send]    isConnected=${isConnected}, sock.user=${!!sock.user}, myJid=${sock.user?.id}`);
           await sock.sendMessage(jid, { text: buildOmegaTerminal(
-            `❌ *SEND FAILED*\n\n   ${e.message}`
+            `❌ *SEND FAILED*\n\n` +
+            `   *Error:* ${e.message}\n\n` +
+            `   *Bot state:*\n` +
+            `   • Connected: ${isConnected}\n` +
+            `   • My JID: ${sock.user?.id || 'N/A'}\n\n` +
+            `   *Tip:* Check if the destination number\n` +
+            `   has WhatsApp installed.`
           ) }, quotedOpts(msg));
         }
         return;
