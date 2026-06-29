@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-// Allow button-helper (which imports 'baileys') to find @whiskeysockets/baileys
+// Resolve legacy 'baileys' imports to @whiskeysockets/baileys.
 const Module = require('module');
 const _origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
@@ -11,10 +11,6 @@ Module._resolveFilename = function (request, ...rest) {
 };
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType } = require('@whiskeysockets/baileys');
-// NOTE: baileys-antiban was tried but its aggressive rate-limiter flagged
-// legitimate usage as "HIGH risk" and falsely reported temporary bans.
-// We implement minimal LID↔PN canonicalization below instead — no risk
-// monitoring, no rate limits, just the LID mapping fix.
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
 const TelegramBot = require('node-telegram-bot-api');
@@ -32,7 +28,7 @@ try {
     console.warn('[buttons] @zeppeliorg/wbails NOT available — falling back to button-helper only');
 }
 
-// Safe import for advanced poll vote decryption (used in Business menu workaround)
+// Optional Baileys poll vote aggregation helper.
 let getAggregateVotesInPollMessage = null;
 try {
   const baileys = require('@whiskeysockets/baileys');
@@ -45,11 +41,11 @@ try {
   } catch (_) {}
 }
 
-// ── CONFIG ──────────────────────────────────────────────────────────────
+// Core configuration
 const AUTH_DIR = 'auth_info';
 const PERSONA_FILE = 'menu_theme.json';
 const PORT = process.env.PORT || 5000;
-const USERS_FILE = 'web_users.json';  // web account storage
+const USERS_FILE = 'web_users.json';
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || null;
 let webhookSecret = null;
 const TELEGRAM_BACKUP_CHANNEL = process.env.TELEGRAM_BACKUP_CHANNEL || null;
@@ -57,8 +53,8 @@ const CUSTOM_PAIR_CODE = process.env.CUSTOM_PAIR_CODE || null;
 
 let backupInProgress = false;
 let lastBackupTime = 0;
-const BACKUP_DEBOUNCE_MS = 15000; // 15s between non-forced backups
-let socketGeneration = 0; // total socket starts (status display only)
+const BACKUP_DEBOUNCE_MS = 15000;
+let socketGeneration = 0;
 const MAX_CONSECUTIVE_FAILURES = 30;
 const socketRuntime = new Map(); // per-session reconnect/generation state
 function getSocketRuntime(sessionKey = 'main') {
@@ -67,12 +63,10 @@ function getSocketRuntime(sessionKey = 'main') {
   return socketRuntime.get(key);
 }
 let isPairing = false;
-const pairingInProgress = new Set(); // per-number pairing tracker for multi-session
+const pairingInProgress = new Set();
 let botStartTime = Date.now();
-let successfulPairings = 0; // count of successful connections
+let successfulPairings = 0;
 const SESSION_FILE = 'sessions.json';
-
-// lastMenuPoll removed — pollCreationCache keyed by message ID (multi-user safe)
 
 // ═══════════════════════════════════════════════════════════════════════
 // ══ DOWNLOADER HELPERS (multi-tier fallbacks for reliability) ═══════════
@@ -169,7 +163,7 @@ const YTDLP_COOKIE_FILE = path.join(require('os').tmpdir(), 'eventide-ytdlp-cook
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const MAX_DOWNLOAD_BYTES = 80 * 1024 * 1024; // 80MB cap — protects Render memory
 
-// Get current persona (eclipse | astraea) for the active WhatsApp session
+// Download and media helpers
 function _ph_currentPersona(sock) {
   try {
     if (!sock?.user?.id) return 'eclipse';
@@ -178,23 +172,19 @@ function _ph_currentPersona(sock) {
   } catch (_) { return 'eclipse'; }
 }
 
-// Extract YouTube video ID from any YouTube URL form
 function _ph_extractYouTubeId(url) {
   const m = String(url || '').match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/embed\/|m\.youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
 }
 
-// Extract hostname from URL for display
 function _ph_extractDomain(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return 'unknown'; }
 }
 
-// Sanitize filename — remove unsafe chars, cap length
 function _ph_safeFilename(s) {
   return String(s || 'media').replace(/[^\w\s.\-]/g, '_').replace(/\s+/g, '_').slice(0, 80);
 }
 
-// Persona-styled response header (used for both .play and .dl results)
 function _ph_personaHeader(persona, title, body) {
   const isAst = persona === 'astraea';
   const theme = isAst ? '☀️' : '🌑';
@@ -208,11 +198,9 @@ function _ph_personaHeader(persona, title, body) {
   );
 }
 
-// Generic HTTPS request with redirect-following, timeout, error capture
 function _ph_httpsRequest(opts, postBody) {
   return new Promise((resolve, reject) => {
     const req = https.request(opts, (res) => {
-      // Follow redirects
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         try {
           const u = new URL(res.headers.location, `https://${opts.hostname}`);
@@ -1888,30 +1876,10 @@ function resolveTargetJid(msg, parts) {
 const POLL_CACHE_FILE = 'poll_cache.json';
 let pollCreationCache = {};
 
-// ── LID → PN MAPPING (learned from incoming messages, persisted to disk) ──
-// WhatsApp sometimes masks the sender's identity as @lid. Baileys 6.7.23
-// cannot SEND to @lid JIDs reliably (messages get stuck as "Waiting for
-// this message" because the encryption session was established under the
-// other form). Fix: when an incoming message arrives with `senderPn`,
-// store the LID→PN mapping. On outgoing sends, convert LID→PN if known.
-//
-// Self-populating — no manual config. Once a contact sends ANY message,
-// the mapping is learned and future replies to that contact work via PN.
-//
-// PERSISTED to disk so mappings survive Render redeploys. Also backed up
-// to Telegram channel via the existing backupAuthToChannel() flow.
-const LID_MAP_FILE = 'lid_pn_map.json';
-const lidToPnMap = new Map();  // key: '<id>@lid', value: '<phone>@s.whatsapp.net'
-
 // ── DELIVERY TRACKER ────────────────────────────────────────────────────
-// Baileys' sendMessage resolves once the WebSocket frame is sent, but
-// WhatsApp may silently drop the message server-side (the "Waiting for
-// this message" bug). We track every outbound send by msg id, listen for
-// `messages.update` status events, and AUTO-RETRY to LID after a timeout
-// if no delivery ack arrives. This makes "REPLY SENT" actually mean
-// "REPLY DELIVERED" — or we retry once before giving up.
+// Tracks outbound delivery acknowledgements via messages.update.
 const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, attempts, sentAt, retried }
-const DELIVERY_TIMEOUT_MS = 8000;     // Wait this long for delivery ack before retrying
+const DELIVERY_TIMEOUT_MS = 8000;
 
 function registerPendingDelivery(msgId, jid, text, sock) {
   if (!msgId) return;
@@ -1947,26 +1915,7 @@ async function handleDeliveryTimeout(msgId, pending) {
     pendingDeliveries.delete(msgId);
     return;
   }
-  // Try the LID as fallback (the original incoming format)
-  // The pending.jid is the PN we tried; find the LID equivalent in our map
-  const lidForPn = findLidForPn(pending.jid);
-  if (!lidForPn) {
-    console.log(`[delivery] ❌ No LID mapping found for PN ${pending.jid} — cannot retry`);
-    pendingDeliveries.delete(msgId);
-    return;
-  }
-  pending.retried = true;
-  try {
-    const retryMsg = await sock.sendMessage(lidForPn, { text: pending.text });
-    console.log(`[delivery] 🔄 RETRY to LID ${lidForPn} — new msgId=${retryMsg?.key?.id}`);
-    if (retryMsg?.key?.id) {
-      // Pass the SAME socket for the retry too
-      registerPendingDelivery(retryMsg.key.id, lidForPn, pending.text, sock);
-    }
-  } catch (e) {
-    console.log(`[delivery] ❌ LID retry failed: ${e.message}`);
-    pendingDeliveries.delete(msgId);
-  }
+  pendingDeliveries.delete(msgId);
 }
 
 function markDelivered(msgId) {
@@ -1978,76 +1927,6 @@ function markDelivered(msgId) {
   }
 }
 
-function findLidForPn(pnJid) {
-  // Reverse lookup in lidToPnMap
-  for (const [lid, pn] of lidToPnMap.entries()) {
-    if (pn === pnJid) return lid;
-  }
-  return null;
-}
-
-function loadLidMap() {
-  try {
-    if (fs.existsSync(LID_MAP_FILE)) {
-      const data = JSON.parse(fs.readFileSync(LID_MAP_FILE, 'utf8'));
-      if (data && typeof data === 'object') {
-        for (const [k, v] of Object.entries(data)) {
-          if (typeof k === 'string' && typeof v === 'string') {
-            lidToPnMap.set(k, v);
-          }
-        }
-        console.log(`[lid-map] ✅ Loaded ${lidToPnMap.size} LID↔PN mappings from disk`);
-      }
-    }
-  } catch (e) {
-    console.log('[lid-map] Failed to load:', e.message);
-  }
-}
-
-function saveLidMap() {
-  try {
-    const data = Object.fromEntries(lidToPnMap);
-    fs.writeFileSync(LID_MAP_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    console.log('[lid-map] Failed to save:', e.message);
-  }
-}
-
-let _lidMapSaveTimer = null;
-function saveLidMapDebounced() {
-  // Debounce disk saves — many messages can arrive in burst, no need to
-  // write the file on each one. Coalesce writes within 2s.
-  if (_lidMapSaveTimer) clearTimeout(_lidMapSaveTimer);
-  _lidMapSaveTimer = setTimeout(() => {
-    _lidMapSaveTimer = null;
-    saveLidMap();
-  }, 2000);
-}
-
-function learnLidPnMapping(msg) {
-  try {
-    const senderLid = msg?.key?.participant || msg?.key?.remoteJid;
-    const senderPn = msg?.key?.senderPn;
-    if (!senderLid || !senderPn) return;
-    const lid = String(senderLid);
-    const pn = String(senderPn);
-    if (lid.endsWith('@lid') && pn.endsWith('@s.whatsapp.net')) {
-      if (lidToPnMap.get(lid) !== pn) {
-        lidToPnMap.set(lid, pn);
-        console.log(`[lid-map] Learned: ${lid} → ${pn} (total: ${lidToPnMap.size})`);
-        // Immediate disk save + immediate Telegram backup (force=true
-        // bypasses the BACKUP_DEBOUNCE_MS debounce in backupAuthToChannel).
-        // LID mappings don't change once learned, so we want them
-        // persisted ASAP — losing one means the bot can't reply to that
-        // contact until they message us again.
-        saveLidMap();
-        backupAuthToChannel(true).catch((e) => {
-          console.log(`[lid-map] Telegram backup failed: ${e.message}`);
-        });
-      }
-    }
-  } catch (_) { /* ignore */ }
-}
 
 function loadPollCache() {
   try {
@@ -4618,7 +4497,7 @@ async function backupAuthToChannel(force = false) {
     }
     // Backup essential JSON files that must survive redeploys
     // (covers web accounts, linked numbers, poll cache, menu theme, etc.)
-    const essentialFiles = [USERS_FILE, LINKED_FILE, SESSION_FILE, GROUP_SETTINGS_FILE, WARNINGS_FILE, WELCOME_FILE, SCHEDULE_FILE, POLL_CACHE_FILE, PERSONA_FILE, 'menu_banner.jpg', LID_MAP_FILE];
+    const essentialFiles = [USERS_FILE, LINKED_FILE, SESSION_FILE, GROUP_SETTINGS_FILE, WARNINGS_FILE, WELCOME_FILE, SCHEDULE_FILE, POLL_CACHE_FILE, PERSONA_FILE, 'menu_banner.jpg'];
     let filesAdded = 0;
     for (const f of essentialFiles) {
       if (fs.existsSync(f)) {
@@ -4844,26 +4723,9 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         return;
       }
 
-      // ── ANTI-REPLAY: message accepted. Learn LID↔PN mapping if available. ──
-      learnLidPnMapping(msg);
-
       socketMsgStore.set(msg);
-      // Baileys 7.0.0-rc9+: remoteJid is the LID (conversation thread),
-      // remoteJidAlt is the PN (actual phone number). We keep rawJid as
-      // the LID (since that's the conversation thread Baileys uses for
-      // routing), but also capture remoteJidAlt for senderPn-detection
-      // edge cases where senderPn isn't populated.
       const rawJid = msg.key.remoteJid;
-      const pnJid = msg.key.remoteJidAlt || null;
       let jid = rawJid;
-      // If senderPn is missing but remoteJidAlt has the PN, learn the mapping too
-      if (rawJid && rawJid.endsWith('@lid') && pnJid && pnJid.endsWith('@s.whatsapp.net')) {
-        if (lidToPnMap.get(rawJid) !== pnJid) {
-          console.log(`[lid-map] Learned from remoteJidAlt: ${rawJid} → ${pnJid}`);
-          lidToPnMap.set(rawJid, pnJid);
-          saveLidMapDebounced();
-        }
-      }
 
       // ── INCOMING MSG LOG (helps verify which chat is which in Render logs) ──
       // The remoteJid IS the chat the message came from (this is who we reply to).
@@ -4878,85 +4740,10 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
                      : 'unknown';
       console.log(`[inbox] ${_msgType} remoteJid=${rawJid} senderPn=${msg.key?.senderPn || '-'} fromMe=${msg.key.fromMe} id=${msg.key.id}`);
 
-      // WhatsApp Web/Business sometimes reports 1:1 chats as @lid on linked
-      // devices. The safest reply target is the exact chat JID where the
-      // command arrived. Do NOT reroute @lid DMs to the bot phone JID; that
-      // makes replies appear in the owner's self-chat instead of the active DM.
+      // Baileys v7 has native LID handling, so reply to the exact chat JID received.
       if (String(rawJid || '').endsWith('@lid')) {
-        const senderPn = msg.key?.senderPn ? String(msg.key.senderPn) : '';
-        const participant = msg.key?.participant ? String(msg.key.participant) : '';
-        const sockUserId = sock.user?.id ? String(sock.user.id) : '';
-        const sockUserLid = sock.user?.lid || sock.authState?.creds?.me?.lid || '';
-        const credsMeId = sock.authState?.creds?.me?.id ? String(sock.authState.creds.me.id) : '';
-        const credsMeLid = sock.authState?.creds?.me?.lid ? String(sock.authState.creds.me.lid) : '';
-        const mappedSocketKey = normalizeNum(socketKeyMap.get(sock) || '');
-
-        console.log(
-          `[lid-debug] raw=${rawJid} fromMe=${msg.key.fromMe} ` +
-          `participant=${participant || '-'} senderPn=${senderPn || '-'} ` +
-          `socketKey=${mappedSocketKey || '-'} ` +
-          `sock.user.id=${sockUserId || '-'} sock.user.lid=${sockUserLid || '-'} ` +
-          `creds.me.id=${credsMeId || '-'} creds.me.lid=${credsMeLid || '-'}`
-        );
-        try {
-          console.log('[lid-key-full] ' + JSON.stringify(msg.key));
-        } catch (e) {
-          console.log('[lid-key-full] stringify failed: ' + e.message);
-        }
-        // Keep the exact @lid chat JID as the reply target. Do NOT reroute to
-        // senderPn — when the OWNER types a command in someone else's DM the
-        // message is fromMe and senderPn is the OWNER'S own number, which would
-        // send the reply to the owner's self-chat instead of the actual chat.
-        console.log(`[lid-fix] raw=${rawJid} senderPn=${senderPn || '-'}`);
-        // ── SMART JID RESOLUTION FOR OUTBOUND REPLIES ──────────────────────
-        // Baileys 6.7.23 cannot SEND to @lid reliably ("Waiting for this
-        // message" stuck messages because the encryption session was set up
-        // under PN). Fix: convert LID to PN before sending. We have three
-        // sources of PN knowledge, tried in order:
-        //   1. Learned mapping (lidToPnMap) — populated from incoming senderPn
-        //   2. Phone-shaped LID — numeric portion looks like a phone number
-        //   3. Random-ID LID — fall back to LID, accept "Waiting..." limitation
-        //
-        // Self-chat is detected first (always replies to bot's own PN).
-        const _normJid = (j) => {
-          if (!j) return '';
-          const parts = String(j).split('@');
-          const user = (parts[0] || '').split(':')[0];
-          return `${user}@${parts[1] || ''}`;
-        };
-        const _cleanRaw    = _normJid(rawJid);
-        const _cleanOwnId  = _normJid(sockUserId);
-        const _cleanOwnLid = _normJid(sockUserLid);
-
-        if (_cleanOwnId && _cleanRaw === _cleanOwnId) {
-          // CASE A: self-chat arriving as PN
-          jid = sockUserId;
-          console.log(`[lid-fix] self-chat via PN → sending to OWN PN: ${jid}`);
-        } else if (_cleanOwnLid && _cleanRaw === _cleanOwnLid) {
-          // CASE B: self-chat arriving as bot's OWN LID
-          jid = sockUserId;
-          console.log(`[lid-fix] self-chat via OWN LID → sending to OWN PN: ${jid}`);
-        } else if (lidToPnMap.has(rawJid)) {
-          // CASE C: OTHER person, mapping learned from their earlier message
-          jid = lidToPnMap.get(rawJid);
-          console.log(`[lid-fix] LID→PN via learned map: ${rawJid} → ${jid}`);
-        } else if (rawJid.endsWith('@lid') &&
-                   /^\d{10,15}$/.test(rawJid.split('@')[0].split(':')[0])) {
-          // CASE D: OTHER person, phone-shaped LID (numeric portion IS a phone)
-          const numPart = rawJid.split('@')[0].split(':')[0];
-          jid = numPart + '@s.whatsapp.net';
-          console.log(`[lid-fix] LID→PN via phone-shape: ${rawJid} → ${jid}`);
-        } else if (rawJid.endsWith('@lid')) {
-          // CASE E: random-ID LID, no mapping, no phone shape
-          // Keep as LID — will likely fail with "Waiting for this message"
-          // until the contact sends a message back to populate the mapping.
-          jid = rawJid;
-          console.log(`[lid-fix] random-ID LID kept as-is: ${jid}`);
-        } else {
-          // CASE F: PN arrived (rare for other DM) — keep as-is
-          jid = rawJid;
-          console.log(`[lid-fix] PN kept as-is: ${jid}`);
-        }
+        console.log(`[lid] using native v7 chat jid: ${rawJid}`);
+        jid = rawJid;
       }
 
 
@@ -5085,210 +4872,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         }
       }
 
-      if (lower === ".testbiz") {
-        console.log(`[TESTBIZ] Running Tests 13-17 research for ${jid}`);
-        
-        const isGroup = String(jid || "").endsWith("@g.us");
-        const ts = Math.floor(Date.now() / 1000) - 77980457;
-
-        const baseNodes = [
-          {
-            tag: 'biz',
-            attrs: {
-              actual_actors: isGroup ? '1' : '2',
-              host_storage: '2',
-              privacy_mode_ts: `${ts}`,
-            },
-            content: [
-              { tag: 'engagement', attrs: { customer_service_state: 'open', conversation_state: 'open' } },
-              { tag: 'interactive', attrs: { type: 'native_flow', v: '1' }, content: [
-                { tag: 'native_flow', attrs: { v: '9', name: 'mixed' }, content: [] }
-              ] }
-            ]
-          }
-        ];
-        if (!isGroup) baseNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } });
-
-        // ========== TEST 13: Different native_flow version (v: '3') ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 13: native_flow v: '3'" }, { quoted: msg });
-
-          const msg13 = proto.Message.fromObject({
-            viewOnceMessage: {
-              message: {
-                messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} },
-                interactiveMessage: {
-                  body: { text: "TEST 13 — native_flow v: '3'" },
-                  footer: { text: "WhatsApp Business • Test 13" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 13", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t13_a" },
-                        { header: "B", title: "Option B", id: "t13_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          const nodes13 = [...baseNodes];
-          nodes13[0].content[1].attrs.v = '3';
-          await sock.relayMessage(jid, msg13, { additionalNodes: nodes13 });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 13 failed: " + e.message }, { quoted: msg });
-        }
-        await new Promise(r => setTimeout(r, 2000));
-
-        // ========== TEST 14: With statusJidList ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 14: With statusJidList" }, { quoted: msg });
-
-          const msg14 = proto.Message.fromObject({
-            viewOnceMessage: {
-              message: {
-                messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} },
-                interactiveMessage: {
-                  body: { text: "TEST 14 — With statusJidList" },
-                  footer: { text: "WhatsApp Business • Test 14" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 14", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t14_a" },
-                        { header: "B", title: "Option B", id: "t14_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          await sock.relayMessage(jid, msg14, { 
-            additionalNodes: baseNodes,
-            statusJidList: [jid]
-          });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 14 failed: " + e.message }, { quoted: msg });
-        }
-        await new Promise(r => setTimeout(r, 2000));
-
-        // ========== TEST 15: viewOnceMessageV2 wrapper ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 15: viewOnceMessageV2 wrapper" }, { quoted: msg });
-
-          const msg15 = proto.Message.fromObject({
-            viewOnceMessageV2: {
-              message: {
-                messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} },
-                interactiveMessage: {
-                  body: { text: "TEST 15 — viewOnceMessageV2" },
-                  footer: { text: "WhatsApp Business • Test 15" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 15", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t15_a" },
-                        { header: "B", title: "Option B", id: "t15_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          await sock.relayMessage(jid, msg15, { additionalNodes: baseNodes });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 15 failed: " + e.message }, { quoted: msg });
-        }
-        await new Promise(r => setTimeout(r, 2000));
-
-        // ========== TEST 16: With experimental_flag ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 16: With experimental_flag" }, { quoted: msg });
-
-          const expNodes = [
-            {
-              tag: 'biz',
-              attrs: {
-                actual_actors: isGroup ? '1' : '2',
-                host_storage: '2',
-                privacy_mode_ts: `${ts}`,
-                experimental_flag: '1'
-              },
-              content: [
-                { tag: 'engagement', attrs: { customer_service_state: 'open', conversation_state: 'open' } },
-                { tag: 'interactive', attrs: { type: 'native_flow', v: '1' }, content: [
-                  { tag: 'native_flow', attrs: { v: '9', name: 'mixed' }, content: [] }
-                ] }
-              ]
-            }
-          ];
-          if (!isGroup) expNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } });
-
-          const msg16 = proto.Message.fromObject({
-            viewOnceMessage: {
-              message: {
-                messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} },
-                interactiveMessage: {
-                  body: { text: "TEST 16 — experimental_flag" },
-                  footer: { text: "WhatsApp Business • Test 16" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 16", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t16_a" },
-                        { header: "B", title: "Option B", id: "t16_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          await sock.relayMessage(jid, msg16, { additionalNodes: expNodes });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 16 failed: " + e.message }, { quoted: msg });
-        }
-        await new Promise(r => setTimeout(r, 2000));
-
-        // ========== TEST 17: messageContextInfo with more fields ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 17: messageContextInfo with more fields" }, { quoted: msg });
-
-          const msg17 = proto.Message.fromObject({
-            viewOnceMessage: {
-              message: {
-                messageContextInfo: {
-                  deviceListMetadataVersion: 2,
-                  deviceListMetadata: {},
-                  messageSecret: Buffer.from("testsecret1234567890abcdef12", "hex")
-                },
-                interactiveMessage: {
-                  body: { text: "TEST 17 — messageContextInfo extra" },
-                  footer: { text: "WhatsApp Business • Test 17" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 17", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t17_a" },
-                        { header: "B", title: "Option B", id: "t17_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          await sock.relayMessage(jid, msg17, { additionalNodes: baseNodes });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 17 failed: " + e.message }, { quoted: msg });
-        }
-
-        await sock.sendMessage(jid, { 
-          text: "✅ Tests 13-17 sent. Please report results." 
-        }, { quoted: msg });
-        
-        return;
-      }
-
-      if (lower.startsWith(".") && lower !== ".testbiz") {
+      if (lower.startsWith(".")) {
         await sendReaction(sock, jid, msg.key, "⚡");
       }
 
@@ -5659,55 +5243,6 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           
           return;
         }
-      }
-
-      // ── .lidtest ── Diagnose WhatsApp @lid DM delivery modes
-      if (lower === '.lidtest') {
-        if (!String(rawJid || '').endsWith('@lid')) {
-          await sock.sendMessage(jid, { text: buildOmegaTerminal('`.lidtest` only runs inside an @lid DM.\n\nTry it inside the DM that is not receiving replies.') }, quotedOpts(msg));
-          return;
-        }
-
-        const delay = ms => new Promise(r => setTimeout(r, ms));
-        console.log(`[lidtest] starting for raw=${rawJid} currentReplyJid=${jid}`);
-
-        // Method 1: normal send to raw @lid, no quoted context
-        try {
-          await sock.sendMessage(rawJid, { text: '🧪 LIDTEST 1/4 — raw @lid sendMessage, no quote.' });
-          console.log('[lidtest] method 1 sent');
-        } catch (e) { console.log('[lidtest] method 1 failed: ' + e.message); }
-        await delay(900);
-
-        // Method 2: raw @lid with ephemeral explicitly disabled
-        try {
-          await sock.sendMessage(rawJid, { text: '🧪 LIDTEST 2/4 — raw @lid sendMessage, ephemeral off.' }, { ephemeralExpiration: 0 });
-          console.log('[lidtest] method 2 sent');
-        } catch (e) { console.log('[lidtest] method 2 failed: ' + e.message); }
-        await delay(900);
-
-        // Method 3: direct relayMessage to raw @lid
-        try {
-          const relay = generateWAMessageFromContent(rawJid, {
-            conversation: '🧪 LIDTEST 3/4 — raw @lid relayMessage direct.'
-          }, {});
-          await sock.relayMessage(rawJid, relay.message, { messageId: relay.key.id });
-          console.log('[lidtest] method 3 sent');
-        } catch (e) { console.log('[lidtest] method 3 failed: ' + e.message); }
-        await delay(900);
-
-        // Method 4: PN only if WhatsApp actually provided senderPn (do not invent it)
-        try {
-          const senderPn = msg.key?.senderPn ? String(msg.key.senderPn) : '';
-          if (senderPn.endsWith('@s.whatsapp.net')) {
-            await sock.sendMessage(senderPn, { text: '🧪 LIDTEST 4/4 — senderPn sendMessage.' });
-            console.log('[lidtest] method 4 sent to senderPn=' + senderPn);
-          } else {
-            console.log('[lidtest] method 4 skipped: no senderPn on msg.key');
-          }
-        } catch (e) { console.log('[lidtest] method 4 failed: ' + e.message); }
-
-        console.log(`[lidtest] complete for raw=${rawJid}`);
-        return;
       }
 
       if (lower === '.ping') {
@@ -8368,210 +7903,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         }
         return;
       }
-      if (lower === ".testbiz") {
-        console.log(`[TESTBIZ] Running Tests 13-17 research for ${jid}`);
-        
-        const isGroup = String(jid || "").endsWith("@g.us");
-        const ts = Math.floor(Date.now() / 1000) - 77980457;
-
-        const baseNodes = [
-          {
-            tag: 'biz',
-            attrs: {
-              actual_actors: isGroup ? '1' : '2',
-              host_storage: '2',
-              privacy_mode_ts: `${ts}`,
-            },
-            content: [
-              { tag: 'engagement', attrs: { customer_service_state: 'open', conversation_state: 'open' } },
-              { tag: 'interactive', attrs: { type: 'native_flow', v: '1' }, content: [
-                { tag: 'native_flow', attrs: { v: '9', name: 'mixed' }, content: [] }
-              ] }
-            ]
-          }
-        ];
-        if (!isGroup) baseNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } });
-
-        // ========== TEST 13: Different native_flow version (v: '3') ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 13: native_flow v: '3'" }, { quoted: msg });
-
-          const msg13 = proto.Message.fromObject({
-            viewOnceMessage: {
-              message: {
-                messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} },
-                interactiveMessage: {
-                  body: { text: "TEST 13 — native_flow v: '3'" },
-                  footer: { text: "WhatsApp Business • Test 13" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 13", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t13_a" },
-                        { header: "B", title: "Option B", id: "t13_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          const nodes13 = [...baseNodes];
-          nodes13[0].content[1].attrs.v = '3';
-          await sock.relayMessage(jid, msg13, { additionalNodes: nodes13 });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 13 failed: " + e.message }, { quoted: msg });
-        }
-        await new Promise(r => setTimeout(r, 2000));
-
-        // ========== TEST 14: With statusJidList ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 14: With statusJidList" }, { quoted: msg });
-
-          const msg14 = proto.Message.fromObject({
-            viewOnceMessage: {
-              message: {
-                messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} },
-                interactiveMessage: {
-                  body: { text: "TEST 14 — With statusJidList" },
-                  footer: { text: "WhatsApp Business • Test 14" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 14", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t14_a" },
-                        { header: "B", title: "Option B", id: "t14_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          await sock.relayMessage(jid, msg14, { 
-            additionalNodes: baseNodes,
-            statusJidList: [jid]
-          });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 14 failed: " + e.message }, { quoted: msg });
-        }
-        await new Promise(r => setTimeout(r, 2000));
-
-        // ========== TEST 15: viewOnceMessageV2 wrapper ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 15: viewOnceMessageV2 wrapper" }, { quoted: msg });
-
-          const msg15 = proto.Message.fromObject({
-            viewOnceMessageV2: {
-              message: {
-                messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} },
-                interactiveMessage: {
-                  body: { text: "TEST 15 — viewOnceMessageV2" },
-                  footer: { text: "WhatsApp Business • Test 15" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 15", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t15_a" },
-                        { header: "B", title: "Option B", id: "t15_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          await sock.relayMessage(jid, msg15, { additionalNodes: baseNodes });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 15 failed: " + e.message }, { quoted: msg });
-        }
-        await new Promise(r => setTimeout(r, 2000));
-
-        // ========== TEST 16: With experimental_flag ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 16: With experimental_flag" }, { quoted: msg });
-
-          const expNodes = [
-            {
-              tag: 'biz',
-              attrs: {
-                actual_actors: isGroup ? '1' : '2',
-                host_storage: '2',
-                privacy_mode_ts: `${ts}`,
-                experimental_flag: '1'
-              },
-              content: [
-                { tag: 'engagement', attrs: { customer_service_state: 'open', conversation_state: 'open' } },
-                { tag: 'interactive', attrs: { type: 'native_flow', v: '1' }, content: [
-                  { tag: 'native_flow', attrs: { v: '9', name: 'mixed' }, content: [] }
-                ] }
-              ]
-            }
-          ];
-          if (!isGroup) expNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } });
-
-          const msg16 = proto.Message.fromObject({
-            viewOnceMessage: {
-              message: {
-                messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {} },
-                interactiveMessage: {
-                  body: { text: "TEST 16 — experimental_flag" },
-                  footer: { text: "WhatsApp Business • Test 16" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 16", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t16_a" },
-                        { header: "B", title: "Option B", id: "t16_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          await sock.relayMessage(jid, msg16, { additionalNodes: expNodes });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 16 failed: " + e.message }, { quoted: msg });
-        }
-        await new Promise(r => setTimeout(r, 2000));
-
-        // ========== TEST 17: messageContextInfo with more fields ==========
-        try {
-          await sock.sendMessage(jid, { text: "🧪 TEST 17: messageContextInfo with more fields" }, { quoted: msg });
-
-          const msg17 = proto.Message.fromObject({
-            viewOnceMessage: {
-              message: {
-                messageContextInfo: {
-                  deviceListMetadataVersion: 2,
-                  deviceListMetadata: {},
-                  messageSecret: Buffer.from("testsecret1234567890abcdef12", "hex")
-                },
-                interactiveMessage: {
-                  body: { text: "TEST 17 — messageContextInfo extra" },
-                  footer: { text: "WhatsApp Business • Test 17" },
-                  nativeFlowMessage: {
-                    buttons: [{ name: "single_select", buttonParamsJson: JSON.stringify({
-                      title: "Test 17", sections: [{ title: "Options", rows: [
-                        { header: "A", title: "Option A", id: "t17_a" },
-                        { header: "B", title: "Option B", id: "t17_b" }
-                      ]}]
-                    })}]
-                  }
-                }
-              }
-            }
-          });
-          await sock.relayMessage(jid, msg17, { additionalNodes: baseNodes });
-        } catch (e) {
-          await sock.sendMessage(jid, { text: "❌ TEST 17 failed: " + e.message }, { quoted: msg });
-        }
-
-        await sock.sendMessage(jid, { 
-          text: "✅ Tests 13-17 sent. Please report results." 
-        }, { quoted: msg });
-        
-        return;
-      }
-
-      if (lower.startsWith(".") && lower !== ".testbiz") {
+      if (lower.startsWith(".")) {
         // Check if this is a known command missing arguments (not an unknown command)
         const cmdWord = lower.split(/\s+/)[0];
         const knownCmds = ['.menu','.eclipse','.astraea','.phantom','.ping','.send','.uptime','.status','.owner','.dev','.help','.acccheck','.kill','.mode','.vv','.xx','.vtn','.new','.block','.unblock','.blocklist','.join','.leave','.broadcast','.getpp','.getgpp','.chatinfo','.groups','.setname','.setbio','.setpp','.setmenupic','.delmenupic','.setalias','.delalias','.aliaslist','.prefix','.autoreact','.persona','.restart','.relink','.pair','.telegram.pair','.kick','.add','.promote','.demote','.setgname','.setgdesc','.setgpp','.lock','.unlock','.link','.revoke','.tagall','.everyone','.all','.hidetag','.ht','.membercount','.antilink','.antispam','.antimention','.antidelete','.antibot','.antibug','.warn','.warnlist','.resetwarn','.welcome','.setwelcome','.goodbye','.setgoodbye','.schedule','.unschedule','.schedules','.joke','.fact','.quote','.roast','.compliment','.ship','.rate','.vibe','.8ball','.flip','.roll','.dare','.truth','.rps','.dl','.yt','.ytmp3','.play','.lyrics','.tiktok','.ig','.fb','.x','.pin','.translate','.weather','.calc','.genpwd','.base64','.removebg','.sticker','.s','.toimg','.tts','.voice','.tovn','.qr','.blur','.invert','.grayscale','.brighten','.darken','.sharpen','.pixelate'];
@@ -8690,11 +8022,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 120_000,
   });
-  // ── LID↔PN mapping happens inline in the handler (see [lid-fix] block) ──
-  // No external middleware needed — the lidToPnMap + LID-fix logic in the
-  // messages.upsert handler handles all canonicalization safely without
-  // any rate-limit / risk-monitor that could falsely flag legitimate use.
-  if (isMultiSession) {
+    if (isMultiSession) {
     activeSockets[socketKey] = { sock, isConnected: false, user: null, authDir, connectedAt: null };
     socketKeyMap.set(sock, socketKey);
   } else {
@@ -8705,15 +8033,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   // ANTI-REPLAY: Don't process ANY messages until Baileys has flushed all offline/pending messages
   let pendingNotificationsFlushed = false;
 
-  // ── Pairing code (Baileys v7: request DIRECTLY, do NOT wait for a qr event) ──
-  // In Baileys v6.x the socket emitted a `qr` event in pairing mode and the old
-  // code waited for it before calling requestPairingCode. v7.x no longer emits
-  // that qr reliably in pairing-code mode, so the old wait-for-qr promise hung
-  // forever ("generation never drops"). The correct v7 flow is: as soon as the
-  // socket exists and creds are NOT yet registered, call requestPairingCode after
-  // a short settle delay. requestPairingCode internally waits for the WS to be
-  // ready, so we don't need to gate it on any event.
-  // MULTI-USER MODE: removed registered guard
+  // Pairing code flow
   if (phoneNumber) {
     const pairPromise = (async () => {
       try {
@@ -8747,36 +8067,12 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     }
   }
 
-  // ── Messages handler (installed BEFORE connection.update) ───────────
-  // firstConnectionTime — set ONCE when connection first opens, NEVER reset
   const firstConnRef = { time: 0 };
 
   sock.ev.on('messages.upsert', handleMessagesUpsert.bind(null, sock, socketMsgStore, firstConnRef));
 
-  // ── Baileys 7.x native LID↔PN mapping listener ──────────────────────────
-  // In 7.0.0-rc9+, Baileys maintains its own LID mapping store and emits
-  // 'lid-mapping.update' whenever a new mapping is learned from incoming
-  // messages. We mirror this into our own lidToPnMap (which we persist to
-  // disk via Telegram backup) so the mapping survives across redeploys.
-  sock.ev.on('lid-mapping.update', async ({ lid, pn }) => {
-    try {
-      if (lid && pn) {
-        const lidJid = String(lid) + (String(lid).includes('@') ? '' : '@lid');
-        const pnJid = String(pn) + (String(pn).includes('@') ? '' : '@s.whatsapp.net');
-        if (lidToPnMap.get(lidJid) !== pnJid) {
-          lidToPnMap.set(lidJid, pnJid);
-          console.log(`[lid-map] ✅ Native Baileys 7.x mapping: ${lidJid} → ${pnJid} (total: ${lidToPnMap.size})`);
-          saveLidMapDebounced();
-        }
-      }
-    } catch (e) { console.log(`[lid-map] native update error: ${e.message}`); }
-  });
-  console.log('[socket] ✅ Registered Baileys 7.x native lid-mapping.update listener');
 
-  // ── POLL FIX: messages.update handler for proper Baileys poll vote decryption ──
-  // This is the OFFICIAL way Baileys delivers decrypted poll votes.
-  // When Baileys internally decrypts a poll vote, it emits a messages.update
-  // event with pollUpdates containing the already-decrypted vote data.
+  // Poll updates handler
   sock.ev.on('messages.update', async (updates) => {
     try {
       for (const { key, update } of updates) {
@@ -8795,14 +8091,13 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
 
         if (!update?.pollUpdates) continue;
 
-        // Check if this is one of our menu polls
         const pollMsgId = key?.id;
         if (!pollMsgId) continue;
 
-              // Per-user poll lookup: find owner from global map, then get from user's session
+        // Resolve cached poll data for the owning session.
       const ownerPhone = pollOwnerMap.get(pollMsgId);
       let cached = ownerPhone ? getUserPoll(ownerPhone, pollMsgId) : pollCreationCache[pollMsgId];
-        if (!cached) continue; // Not our menu poll
+        if (!cached) continue;
 
         const pollOptions = cached.options || [];
         const pollIds = cached.ids || [];
@@ -8819,7 +8114,6 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
             });
 
             if (aggregated && aggregated.length > 0) {
-              // Find the option that just got a new vote
               const voted = aggregated.find(v => v.voters && v.voters.length > 0);
               if (voted && voted.name) {
                 const optIndex = pollOptions.indexOf(voted.name);
@@ -8835,7 +8129,6 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
 
                   if (global.menuStateMap) delete global.menuStateMap[jid];
                   await handleMenuButton(sock, jid, null, mappedId);
-                  // lastMenuPoll removed
                   return;
                 }
               }
@@ -8845,7 +8138,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
           }
         }
 
-        // Fallback: manually inspect pollUpdates for vote data
+        // Fallback hash match for poll option lookup.
         for (const pollUpd of update.pollUpdates) {
           if (pollUpd?.vote?.selectedOptions && pollUpd.vote.selectedOptions.length > 0) {
             const crypto = require('crypto');
@@ -8865,7 +8158,6 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
 
                 if (global.menuStateMap) delete global.menuStateMap[jid];
                 await handleMenuButton(sock, jid, null, mappedId);
-                // lastMenuPoll removed
                 return;
               }
             }
@@ -8878,19 +8170,16 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   });
 
 
-  // ── GROUP PARTICIPANT EVENTS: Welcome/Goodbye + Antibot ──
+  // Group participant events
   sock.ev.on('group-participants.update', async (event) => {
     try {
       const { id: gid, participants, action } = event;
       const conf = getWelcomeConfig(gid);
 
       if (action === 'add') {
-        // Antibot: check if new member is a bot (has @lid or known bot patterns)
         if (getGroupSetting(gid, 'antibot') && await isBotAdmin(sock, gid)) {
-          // Simple heuristic — skip for now, complex bot detection needs more logic
         }
 
-        // Welcome message
         if (conf.welcome) {
           for (const p of participants) {
             let meta;
@@ -8920,7 +8209,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     }
   });
 
-  // ── Connection lifecycle ─────────────────────────────────────────────
+  // Connection lifecycle
   sock.ev.on('connection.update', async (update) => {
     if (rt.generation !== myGen) { console.log(`[socket:${sessionKey}] Gen ${myGen} ignoring stale update`); return; }
     const { connection, lastDisconnect, qr } = update;
@@ -9722,8 +9011,7 @@ app.post('/api/pair', async (req, res) => {
       connectTimeoutMs: 90000,
       defaultQueryTimeoutMs: 120000,
     });
-    // LID↔PN mapping handled inline in the messages.upsert handler
-    // (see [lid-fix] block + lidToPnMap above the handler).
+    // Baileys v7 native identity handling is used for web pairing sockets too.
     return { sock, saveCreds };
   };
 
@@ -10046,7 +9334,6 @@ async function main() {
   loadWelcome();
   loadSchedules();
   loadLinked();
-  loadLidMap();  // LID↔PN mappings (persisted across redeploys)
 
   // ── Telegram init with retry (handles transient EFATAL/Network errors) ──
   let telegramReady = false;
