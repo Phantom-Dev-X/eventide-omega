@@ -1878,8 +1878,8 @@ let pollCreationCache = {};
 
 // ── DELIVERY TRACKER ────────────────────────────────────────────────────
 // Tracks outbound delivery acknowledgements via messages.update.
-// Capped and simplified to prevent resource exhaustion and key desynchronization.
-const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, sentAt }
+const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, sentAt, sock, retried }
+const DELIVERY_TIMEOUT_MS = 30000; // Safe 30s timeout
 
 function registerPendingDelivery(msgId, jid, text, sock) {
   if (!msgId) return;
@@ -1894,13 +1894,66 @@ function registerPendingDelivery(msgId, jid, text, sock) {
   pendingDeliveries.set(msgId, {
     jid,
     text,
+    sock,
     sentAt: Date.now(),
+    retried: false,
   });
 
-  // CRITICAL: We DO NOT schedule any background setTimeout timers or auto-resends anymore.
-  // WhatsApp's native server protocol guarantees delivery once the message has left the client.
-  // This avoids aggressive timeouts, prevents duplicate/spam message race conditions,
-  // and completely eliminates key desynchronization/stuck clock icon bugs!
+  // Schedule a safe timeout check
+  setTimeout(() => {
+    const pending = pendingDeliveries.get(msgId);
+    if (pending && !pending.retried) {
+      handleDeliveryTimeout(msgId, pending).catch(() => {});
+    }
+  }, DELIVERY_TIMEOUT_MS);
+}
+
+async function handleDeliveryTimeout(msgId, pending) {
+  const sock = pending.sock;
+  if (!sock || !sock.user) {
+    pendingDeliveries.delete(msgId);
+    return;
+  }
+  
+  console.log(`[delivery] ⏰ Timeout — no delivery ack in ${DELIVERY_TIMEOUT_MS}ms for ${msgId} (target=${pending.jid})`);
+  if (pending.retried) {
+    pendingDeliveries.delete(msgId);
+    return;
+  }
+  pending.retried = true;
+
+  // Safe fallback retry: only retry to their resolved LID if original was a PN JID.
+  // We DO NOT force-send to explicit device suffixes like :29 or :0 because that corrupts encryption keys.
+  if (pending.jid.endsWith('@s.whatsapp.net')) {
+    let resolvedLid = '';
+    const rawPnJid = pending.jid;
+    
+    // 1. Check local mappings first
+    const mappings = getLidMappings(sock.authDir || AUTH_DIR);
+    if (mappings.pnToLid.has(rawPnJid)) {
+      resolvedLid = mappings.pnToLid.get(rawPnJid);
+    } else {
+      // 2. Query USync server as backup
+      try {
+        if (sock.signalRepository?.lidMapping?.getLIDForPN) {
+          resolvedLid = await sock.signalRepository.lidMapping.getLIDForPN(rawPnJid);
+        }
+      } catch (_) {}
+    }
+
+    if (resolvedLid) {
+      // Clean suffix
+      if (resolvedLid.includes(':')) resolvedLid = resolvedLid.split(':')[0] + '@lid';
+      try {
+        console.log(`[delivery] 🔄 RETRY (PN→LID) → ${resolvedLid}`);
+        await sock.sendMessage(resolvedLid, { text: pending.text });
+      } catch (e) {
+        console.log(`[delivery] ⚠️ RETRY PN→LID failed: ${e.message}`);
+      }
+    }
+  }
+  
+  pendingDeliveries.delete(msgId);
 }
 
 function markDelivered(msgId) {
@@ -4775,18 +4828,11 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       if (type !== 'notify' && type !== 'append') return;
       if (!msg.message) return;
 
-      // ── ANTI-REPLAY: Dead simple — only process msgs timestamped AFTER we connected ──
-      const msgTs = typeof msg.messageTimestamp === 'object' 
-        ? (msg.messageTimestamp?.low || 0) 
-        : Number(msg.messageTimestamp || 0);
-      
-      if (!firstConnRef.time) {
-        // Not connected yet — drop silently
-        return;
-      }
-      
-      if (msgTs > 0 && msgTs <= firstConnRef.time) {
-        console.log(`[skip] Old msg (ts=${msgTs} <= conn=${firstConnRef.time}) from=${msg.key?.remoteJid}`);
+      // ── ANTI-REPLAY: Skip messages older than 45 seconds to prevent replay loops on boot/reconnect ──
+      const nowTs = Math.floor(Date.now() / 1000);
+      const age = nowTs - msgTs;
+      if (msgTs > 0 && age > 45) {
+        console.log(`[skip] Old msg skipped — age: ${age}s (ts=${msgTs}, now=${nowTs}) from=${msg.key?.remoteJid}`);
         return;
       }
 
