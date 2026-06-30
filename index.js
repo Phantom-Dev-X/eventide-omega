@@ -4152,6 +4152,80 @@ async function handleMenuButton(sock, jid, msg, buttonId) {
 // ── Helpers ─────────────────────────────────────────────────────────────
 function normalizeNum(input) { return String(input || '').replace(/[^\d]/g, ''); }
 
+// Load all persistent LID-to-PN and PN-to-LID mappings from Baileys auth files
+function getLidMappings(authDir) {
+  const pnToLid = new Map();
+  const lidToPn = new Map();
+  
+  try {
+    if (!fs.existsSync(authDir)) return { pnToLid, lidToPn };
+    const files = fs.readdirSync(authDir);
+    for (const f of files) {
+      if (f.startsWith('lid-mapping-') && f.endsWith('.json')) {
+        const filePath = path.join(authDir, f);
+        const content = fs.readFileSync(filePath, 'utf8');
+        const parsed = JSON.parse(content);
+        
+        let foundLid = '';
+        let foundPn = '';
+        
+        const search = (obj) => {
+          if (!obj || typeof obj !== 'object') return;
+          for (const [k, v] of Object.entries(obj)) {
+            if (typeof v === 'string') {
+              if (v.endsWith('@lid')) foundLid = v;
+              else if (v.endsWith('@s.whatsapp.net')) foundPn = v;
+            } else if (typeof v === 'object') {
+              search(v);
+            }
+          }
+        };
+        
+        search(parsed);
+        
+        const keyId = f.replace('lid-mapping-', '').replace('_rev.json', '').replace('.json', '');
+        if (keyId.endsWith('@lid') || /^\d+$/.test(keyId)) {
+          const cleanLid = keyId.includes('@') ? keyId : keyId + '@lid';
+          foundLid = foundLid || cleanLid;
+        } else if (keyId.endsWith('@s.whatsapp.net')) {
+          foundPn = foundPn || keyId;
+        }
+        
+        if (foundLid && foundPn) {
+          pnToLid.set(foundPn, foundLid);
+          lidToPn.set(foundLid, foundPn);
+        } else if (parsed && typeof parsed === 'string') {
+          const val = parsed;
+          if (val.endsWith('@lid') && keyId.endsWith('@s.whatsapp.net')) {
+            pnToLid.set(keyId, val);
+            lidToPn.set(val, keyId);
+          } else if (val.endsWith('@s.whatsapp.net') && (keyId.endsWith('@lid') || /^\d+$/.test(keyId))) {
+            const cleanLid = keyId.includes('@') ? keyId : keyId + '@lid';
+            pnToLid.set(val, cleanLid);
+            lidToPn.set(cleanLid, val);
+          }
+        } else if (parsed && typeof parsed === 'object' && parsed.val) {
+          const val = parsed.val;
+          if (typeof val === 'string') {
+            if (val.endsWith('@lid') && keyId.endsWith('@s.whatsapp.net')) {
+              pnToLid.set(keyId, val);
+              lidToPn.set(val, keyId);
+            } else if (val.endsWith('@s.whatsapp.net') && (keyId.endsWith('@lid') || /^\d+$/.test(keyId))) {
+              const cleanLid = keyId.includes('@') ? keyId : keyId + '@lid';
+              pnToLid.set(val, cleanLid);
+              lidToPn.set(cleanLid, val);
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[lid-mapping-loader] Error reading lid-mapping files:', e.message);
+  }
+  
+  return { pnToLid, lidToPn };
+}
+
 // Generate a fresh, random, unambiguous 8-char pairing code.
 // We always pass an explicit random code so pairing stays deterministic and
 // never depends on any library default/fallback value.
@@ -5352,18 +5426,29 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
               `   _Fetching pre-keys to prevent\n   silent delivery drops._`
             ) }, quotedOpts(msg));
 
-            // Query onWhatsApp (best-effort)
+            // Query JID (best-effort)
             sendJid = sendNum + '@s.whatsapp.net'; // Default fallback
-            try {
-              const onWhats = await sock.onWhatsApp(sendNum + '@s.whatsapp.net');
-              if (onWhats && onWhats.length > 0 && onWhats[0].exists) {
-                sendJid = onWhats[0].jid;
-                isResolved = true;
-              } else {
-                console.log(`[send] ⚠️ onWhatsApp: Number not found on server, using direct fallback JID`);
+            
+            // 1. Try our own locally loaded lid-mappings from the auth directory!
+            const mappings = getLidMappings(authDir);
+            const rawPnJid = sendNum + '@s.whatsapp.net';
+            if (mappings.pnToLid.has(rawPnJid)) {
+              sendJid = mappings.pnToLid.get(rawPnJid);
+              isResolved = true;
+              console.log(`[send] 🎯 Resolved ${rawPnJid} to LID ${sendJid} via local lid-mapping file cache!`);
+            } else {
+              // 2. Not found locally, query onWhatsApp as backup
+              try {
+                const onWhats = await sock.onWhatsApp(sendNum + '@s.whatsapp.net');
+                if (onWhats && onWhats.length > 0 && onWhats[0].exists) {
+                  sendJid = onWhats[0].jid;
+                  isResolved = true;
+                } else {
+                  console.log(`[send] ⚠️ onWhatsApp: Number not found on server, using direct fallback JID`);
+                }
+              } catch (err) {
+                console.log(`[send] ⚠️ onWhatsApp server query failed: ${err.message}. Using direct fallback JID.`);
               }
-            } catch (err) {
-              console.log(`[send] ⚠️ onWhatsApp server query failed: ${err.message}. Using direct fallback JID.`);
             }
           }
 
