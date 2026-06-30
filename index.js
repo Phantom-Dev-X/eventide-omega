@@ -5400,37 +5400,63 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         }
         const sendNum = normalizeNum(sendMatch[1]);
         const sendText = sendMatch[2].trim() || `            — *E V E N T I D E · O M E G A* —\n\n   ⚡ *SIGNAL*\n\n   " *An echo in the void is*\n     *the only proof you exist* ."\n\n   📡 _Sent via Phantom-X_`;
-        const sendJid = sendNum + '@s.whatsapp.net';
         if (!/^\d{10,15}$/.test(sendNum)) {
           await sock.sendMessage(jid, { text: buildOmegaTerminal(
             `❌ *Invalid number*\n\n   "${sendMatch[1]}" no be valid.\n   Use country code without +\n   e.g. 2349029675308`
           ) }, quotedOpts(msg));
           return;
         }
+        
+        let statusMsg = null;
         try {
-          // Diagnostic logging — helps us see exactly what state the bot is in
+          // Status update: resolving target
+          statusMsg = await sock.sendMessage(jid, { text: buildOmegaTerminal(
+            `⏳ *RESOLVING TARGET JID...*\n\n` +
+            `   Querying WhatsApp servers for\n   number: ${sendNum}...\n\n` +
+            `   _This fetches pre-keys and maps\n   LID/formatting variations._`
+          ) }, quotedOpts(msg));
+
+          // 1. Query WhatsApp servers to verify existence and get correct JID
+          const onWhats = await sock.onWhatsApp(sendNum + '@s.whatsapp.net');
+          if (!onWhats || onWhats.length === 0 || !onWhats[0].exists) {
+            await sock.sendMessage(jid, { text: buildOmegaTerminal(
+              `❌ *UNREGISTERED NUMBER*\n\n` +
+              `   "${sendNum}" is not registered\n` +
+              `   on WhatsApp. Please check the\n` +
+              `   number and country code.`
+            ), edit: statusMsg.key }, quotedOpts(msg));
+            return;
+          }
+
+          // 2. Use the exact JID returned by WhatsApp (handles LIDs or country formatting variations)
+          const sendJid = onWhats[0].jid;
+
+          // Diagnostic logging
           const myJid = sock.user?.id ? String(sock.user.id) : 'NOT-CONNECTED';
           const myLid = sock.user?.lid ? String(sock.user.lid) : 'NO-LID';
-          console.log(`[send] 📤 Sending from ${myJid} (LID: ${myLid}) to ${sendJid}`);
+          console.log(`[send] 📤 Sending from ${myJid} (LID: ${myLid}) to resolved JID: ${sendJid} (input: ${sendNum})`);
           console.log(`[send]    isConnected=${isConnected}, sock.user=${!!sock.user}`);
 
+          // 3. Send message
           const sentMsg = await sock.sendMessage(sendJid, { text: sendText });
           console.log(`[send] ✅ Sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
           if (sentMsg?.key?.id) registerPendingDelivery(sentMsg.key.id, sendJid, sendText, sock);
+          
           await sock.sendMessage(jid, { text: buildOmegaTerminal(
             `📤 *SENT*\n\n` +
-            `   🎯 *TO*     : ${sendNum}\n` +
-            `   📨 *MSG ID* : ${sentMsg?.key?.id || 'pending'}\n` +
+            `   🎯 *TO*       : ${sendNum}\n` +
+            `   🔑 *JID*      : ${sendJid}\n` +
+            `   📨 *MSG ID*   : ${sentMsg?.key?.id || 'pending'}\n` +
             `   📝 *PREVIEW*:\n` +
             `   ${sendText.slice(0, 200)}${sendText.length > 200 ? '...' : ''}\n\n` +
             `   ⏳ _Waiting for delivery ack_\n` +
-            `   🔄 _Auto-retry on timeout_\n` +
-            `   💡 _Tip: if contact never received, ask them to message this number first to refresh the session_`
-          ) }, quotedOpts(msg));
+            `   🔄 _Auto-retry on timeout enabled_\n` +
+            `   💡 _Successfully fetched pre-keys via onWhatsApp to prevent silent drops._`
+          ), edit: statusMsg.key }, quotedOpts(msg));
         } catch (e) {
           console.log(`[send] ❌ Failed: ${e.message}`);
           console.log(`[send]    isConnected=${isConnected}, sock.user=${!!sock.user}, myJid=${sock.user?.id}`);
-          await sock.sendMessage(jid, { text: buildOmegaTerminal(
+          const errText = buildOmegaTerminal(
             `❌ *SEND FAILED*\n\n` +
             `   *Error:* ${e.message}\n\n` +
             `   *Bot state:*\n` +
@@ -5438,7 +5464,12 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
             `   • My JID: ${sock.user?.id || 'N/A'}\n\n` +
             `   *Tip:* Check if the destination number\n` +
             `   has WhatsApp installed.`
-          ) }, quotedOpts(msg));
+          );
+          if (statusMsg?.key) {
+            await sock.sendMessage(jid, { text: errText, edit: statusMsg.key }, quotedOpts(msg));
+          } else {
+            await sock.sendMessage(jid, { text: errText }, quotedOpts(msg));
+          }
         }
         return;
       }
