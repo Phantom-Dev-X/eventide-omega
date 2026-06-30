@@ -8038,9 +8038,9 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     markOnlineOnConnect: true,
     syncFullHistory: false,
     generateHighQualityLinkPreview: false,
-    // ANTI-REPLAY: Tell Baileys to reject ALL history sync messages
-    // This prevents offline/pending messages from being delivered on reconnect
-    shouldSyncHistoryMessage: () => false,
+    // Allow history sync messages so Baileys can populate LID-to-PN mappings and group participant metadata.
+    // Our custom timestamp-based anti-replay guard in handleMessagesUpsert will still safely ignore and drop them.
+    shouldSyncHistoryMessage: () => true,
     // Ignore newsletter/status broadcast messages
     shouldIgnoreJid: (jid) => {
       return jid === 'status@broadcast' || (jid && jid.endsWith('@newsletter'));
