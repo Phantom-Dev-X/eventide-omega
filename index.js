@@ -1922,6 +1922,11 @@ async function handleDeliveryTimeout(msgId, pending) {
   // 2. If pending.jid is LID, try recipient's primary device (`:0`)
   // NOTE: We do NOT construct PN from LID — that's guessing which can route
   // to a wrong contact. Only retries with mapped data are safe.
+  //
+  // CRITICAL: Retries are NOT registered for delivery tracking. If we
+  // tracked them, the retry's sendMessage would produce another inbox
+  // event, which times out, which triggers another retry — INFINITE LOOP.
+  // The retry Promise resolution is our best-effort confirmation.
   const tried = [];
   let hardErrorEncountered = false;
   const tryOne = async (target, label) => {
@@ -1930,10 +1935,11 @@ async function handleDeliveryTimeout(msgId, pending) {
     try {
       const r = await sock.sendMessage(target, { text: pending.text });
       console.log(`[delivery] 🔄 RETRY[${label}] → ${target} (msgId=${r?.key?.id})`);
-      if (r?.key?.id) {
-        registerPendingDelivery(r.key.id, target, pending.text, sock);
-        return true;
-      }
+      // NOTE: deliberately NOT registering for delivery tracking here.
+      // The retry is the last attempt. If it fails, we give up cleanly
+      // instead of looping forever. See: previous bug where retries
+      // registered for tracking created an infinite retry loop.
+      return true;
     } catch (e) {
       const errMsg = e.message?.slice(0, 80) || 'unknown';
       console.log(`[delivery] ⚠️ RETRY[${label}] failed: ${errMsg}`);
