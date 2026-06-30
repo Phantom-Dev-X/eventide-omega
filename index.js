@@ -5430,7 +5430,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
             sendJid = sendNum + '@s.whatsapp.net'; // Default fallback
             
             // 1. Try our own locally loaded lid-mappings from the auth directory!
-            const mappings = getLidMappings(authDir);
+            const mappings = getLidMappings(sock.authDir || AUTH_DIR);
             const rawPnJid = sendNum + '@s.whatsapp.net';
             if (mappings.pnToLid.has(rawPnJid)) {
               sendJid = mappings.pnToLid.get(rawPnJid);
@@ -8172,6 +8172,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 120_000,
   });
+  sock.authDir = authDir;
     if (isMultiSession) {
     activeSockets[socketKey] = { sock, isConnected: false, user: null, authDir, connectedAt: null };
     socketKeyMap.set(sock, socketKey);
