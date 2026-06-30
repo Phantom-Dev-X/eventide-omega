@@ -1878,107 +1878,29 @@ let pollCreationCache = {};
 
 // ── DELIVERY TRACKER ────────────────────────────────────────────────────
 // Tracks outbound delivery acknowledgements via messages.update.
-const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, attempts, sentAt, retried }
-const DELIVERY_TIMEOUT_MS = 45000; // Increased to 45s to prevent aggressive timeouts on slow networks or self-chats
+// Capped and simplified to prevent resource exhaustion and key desynchronization.
+const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, sentAt }
 
 function registerPendingDelivery(msgId, jid, text, sock) {
   if (!msgId) return;
+
+  // Prevent memory leaks / resource exhaustion (especially on free cloud platforms)
+  // by capping the active tracker list to the last 100 outbound messages.
+  if (pendingDeliveries.size >= 100) {
+    const oldestKey = pendingDeliveries.keys().next().value;
+    pendingDeliveries.delete(oldestKey);
+  }
+
   pendingDeliveries.set(msgId, {
     jid,
     text,
-    sock,        // CRITICAL: pass the socket so retry can use the same one
-    attempts: 1,
     sentAt: Date.now(),
-    retried: false,
   });
-  // Schedule a timeout check
-  setTimeout(() => {
-    const pending = pendingDeliveries.get(msgId);
-    if (pending) {
-      // Still pending after timeout — retry to LID if we have a mapping
-      handleDeliveryTimeout(msgId, pending).catch(() => {});
-    }
-  }, DELIVERY_TIMEOUT_MS);
-}
 
-async function handleDeliveryTimeout(msgId, pending) {
-  const sock = pending.sock;
-  // Check socket is still alive (sock.user is set when connected)
-  if (!sock || !sock.user) {
-    console.log(`[delivery] ⏰ Timeout — socket disconnected or unavailable for ${msgId} (target=${pending.jid})`);
-    pendingDeliveries.delete(msgId);
-    return;
-  }
-  console.log(`[delivery] ⏰ Timeout — no delivery ack in ${DELIVERY_TIMEOUT_MS}ms for ${msgId} (target=${pending.jid})`);
-  if (pending.retried) {
-    console.log(`[delivery] ❌ Already retried once — giving up on ${msgId}`);
-    pendingDeliveries.delete(msgId);
-    return;
-  }
-  pending.retried = true;
-
-  // Try multiple fallback strategies in order (NO PN-from-LID guessing):
-  // 1. If pending.jid is PN, find mapped LID and retry there
-  // 2. If pending.jid is LID, try recipient's primary device (`:0`)
-  // NOTE: We do NOT construct PN from LID — that's guessing which can route
-  // to a wrong contact. Only retries with mapped data are safe.
-  //
-  // CRITICAL: Retries are NOT registered for delivery tracking. If we
-  // tracked them, the retry's sendMessage would produce another inbox
-  // event, which times out, which triggers another retry — INFINITE LOOP.
-  // The retry Promise resolution is our best-effort confirmation.
-  const tried = [];
-  let hardErrorEncountered = false;
-  const tryOne = async (target, label) => {
-    if (!target || tried.includes(target)) return false;
-    tried.push(target);
-    try {
-      const r = await sock.sendMessage(target, { text: pending.text });
-      console.log(`[delivery] 🔄 RETRY[${label}] → ${target} (msgId=${r?.key?.id})`);
-      // NOTE: deliberately NOT registering for delivery tracking here.
-      // The retry is the last attempt. If it fails, we give up cleanly
-      // instead of looping forever. See: previous bug where retries
-      // registered for tracking created an infinite retry loop.
-      return true;
-    } catch (e) {
-      const errMsg = e.message?.slice(0, 80) || 'unknown';
-      console.log(`[delivery] ⚠️ RETRY[${label}] failed: ${errMsg}`);
-      // 'not-acceptable' / 'bad-request' means the JID format is wrong —
-      // bail out immediately, more retries won't help.
-      if (/not-acceptable|bad-request|invalid/i.test(errMsg)) {
-        hardErrorEncountered = true;
-      }
-    }
-    return false;
-  };
-
-  // Strategy 1: original was PN — retry with mapped LID (safe routing fallback)
-  if (pending.jid.endsWith('@s.whatsapp.net')) {
-    const lidForPn = findLidForPn(pending.jid);
-    if (lidForPn) {
-      const ok = await tryOne(lidForPn, 'PN→LID');
-      if (ok) return;
-    }
-    // CRITICAL: We DO NOT force-send to explicit device suffixes like :29 or :0 anymore.
-    // In modern Baileys, trying to manually target device suffixes when there's no active session
-    // corrupts the encryption ratchets/pre-keys, which causes the message to get stuck with a clock
-    // icon on the phone and completely breaks the session.
-  }
-
-  // Strategy 2: original was LID
-  if (pending.jid.endsWith('@lid')) {
-    // CRITICAL: We DO NOT force-send to explicit device suffixes like :0 anymore.
-    // This avoids corrupting encryption sessions.
-  }
-
-  // All retries exhausted
-  if (hardErrorEncountered) {
-    console.log(`[delivery] ❌ Hard error encountered — JID format invalid, no point retrying`);
-  } else {
-    console.log(`[delivery] ❌ All ${tried.length} retry strategies failed for ${msgId}`);
-  }
-  console.log(`[delivery]    💡 Tip: have the contact send a message first — refreshes the encryption session`);
-  pendingDeliveries.delete(msgId);
+  // CRITICAL: We DO NOT schedule any background setTimeout timers or auto-resends anymore.
+  // WhatsApp's native server protocol guarantees delivery once the message has left the client.
+  // This avoids aggressive timeouts, prevents duplicate/spam message race conditions,
+  // and completely eliminates key desynchronization/stuck clock icon bugs!
 }
 
 function markDelivered(msgId) {
