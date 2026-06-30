@@ -5286,99 +5286,125 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         return;
       }
 
-      // ── .send <number> [text] — send a message to any number (owner only) ──
+      // ── .send <target> [text] — send a message to any number or JID (owner only) ──
       if (lower === '.send' || lower.startsWith('.send ')) {
         if (!senderIsOwner) {
           await sock.sendMessage(jid, { text: buildOmegaTerminal('🔒 *ACCESS_DENIED*\n\n   only the sovereign may\n   command the void to\n   deliver messages.') }, quotedOpts(msg));
           return;
         }
+        
         const sendArgs = text.slice(5).trim();
-        // Try to extract number and optional message
-        // Formats accepted: ".send 2349029675308", ".send 2349029675308 hello world"
-        const sendMatch = sendArgs.match(/^(\+?\d{7,15})\s*(.*)$/s);
-        if (!sendMatch) {
+        if (!sendArgs) {
           await sock.sendMessage(jid, { text: buildOmegaTerminal(
             `📤 *SEND COMMAND*\n\n` +
             `*Usage:*\n` +
-            `  .send <number>          — send default ping\n` +
-            `  .send <number> <text>   — send custom text\n\n` +
+            `  .send <number/JID>          — send default ping\n` +
+            `  .send <number/JID> <text>   — send custom text\n\n` +
             `*Examples:*\n` +
             `  .send 2349029675308\n` +
+            `  .send 120363200000000000@g.us Hello Group!\n` +
             `  .send +1 555 123 4567 Hello from Eventide Omega\n\n` +
             `*Notes:*\n` +
             `  • Owner-only command\n` +
-            `  • Sends from the bot's WhatsApp account\n` +
-            `  • Number must include country code (no + needed)\n` +
-            `  • Delivery tracked — retry to LID if first send fails`
+            `  • Sends to both raw phone numbers and group/direct JIDs\n` +
+            `  • Fail-safe fallback — sends directly even if onWhatsApp check fails`
           ) }, quotedOpts(msg));
           return;
         }
-        const sendNum = normalizeNum(sendMatch[1]);
-        const sendText = sendMatch[2].trim() || `            — *E V E N T I D E · O M E G A* —\n\n   ⚡ *SIGNAL*\n\n   " *An echo in the void is*\n     *the only proof you exist* ."\n\n   📡 _Sent via Phantom-X_`;
-        if (!/^\d{10,15}$/.test(sendNum)) {
-          await sock.sendMessage(jid, { text: buildOmegaTerminal(
-            `❌ *Invalid number*\n\n   "${sendMatch[1]}" no be valid.\n   Use country code without +\n   e.g. 2349029675308`
-          ) }, quotedOpts(msg));
-          return;
+
+        // Parse target and custom message
+        const spaceIndex = sendArgs.indexOf(' ');
+        let targetArg = '';
+        let sendText = '';
+        if (spaceIndex !== -1) {
+          targetArg = sendArgs.slice(0, spaceIndex).trim();
+          sendText = sendArgs.slice(spaceIndex).trim();
+        } else {
+          targetArg = sendArgs.trim();
         }
         
+        sendText = sendText || `            — *E V E N T I D E · O M E G A* —\n\n   ⚡ *SIGNAL*\n\n   " *An echo in the void is*\n     *the only proof you exist* ."\n\n   📡 _Sent via Phantom-X_`;
+
+        let sendJid = '';
+        let isResolved = false;
+        let isGroup = false;
+
         let statusMsg = null;
         try {
-          // Status update: resolving target
-          statusMsg = await sock.sendMessage(jid, { text: buildOmegaTerminal(
-            `⏳ *RESOLVING TARGET JID...*\n\n` +
-            `   Querying WhatsApp servers for\n   number: ${sendNum}...\n\n` +
-            `   _This fetches pre-keys and maps\n   LID/formatting variations._`
-          ) }, quotedOpts(msg));
+          // Check if target is already a formatted JID
+          if (targetArg.includes('@')) {
+            sendJid = targetArg;
+            isResolved = true;
+            isGroup = targetArg.endsWith('@g.us');
+          } else {
+            const sendNum = normalizeNum(targetArg);
+            if (!/^\d{8,15}$/.test(sendNum)) {
+              await sock.sendMessage(jid, { text: buildOmegaTerminal(
+                `❌ *Invalid Target*\n\n   "${targetArg}" is not a valid\n   number or formatted JID.`
+              ) }, quotedOpts(msg));
+              return;
+            }
+            
+            // Send resolution loading message
+            statusMsg = await sock.sendMessage(jid, { text: buildOmegaTerminal(
+              `⏳ *RESOLVING TARGET...*\n\n` +
+              `   Querying WhatsApp servers for\n   number: ${sendNum}...\n\n` +
+              `   _Fetching pre-keys to prevent\n   silent delivery drops._`
+            ) }, quotedOpts(msg));
 
-          // 1. Query WhatsApp servers to verify existence and get correct JID
-          const onWhats = await sock.onWhatsApp(sendNum + '@s.whatsapp.net');
-          if (!onWhats || onWhats.length === 0 || !onWhats[0].exists) {
-            await sock.sendMessage(jid, { text: buildOmegaTerminal(
-              `❌ *UNREGISTERED NUMBER*\n\n` +
-              `   "${sendNum}" is not registered\n` +
-              `   on WhatsApp. Please check the\n` +
-              `   number and country code.`
-            ), edit: statusMsg.key }, quotedOpts(msg));
-            return;
+            // Query onWhatsApp (best-effort)
+            sendJid = sendNum + '@s.whatsapp.net'; // Default fallback
+            try {
+              const onWhats = await sock.onWhatsApp(sendNum + '@s.whatsapp.net');
+              if (onWhats && onWhats.length > 0 && onWhats[0].exists) {
+                sendJid = onWhats[0].jid;
+                isResolved = true;
+              } else {
+                console.log(`[send] ⚠️ onWhatsApp: Number not found on server, using direct fallback JID`);
+              }
+            } catch (err) {
+              console.log(`[send] ⚠️ onWhatsApp server query failed: ${err.message}. Using direct fallback JID.`);
+            }
           }
-
-          // 2. Use the exact JID returned by WhatsApp (handles LIDs or country formatting variations)
-          const sendJid = onWhats[0].jid;
 
           // Diagnostic logging
           const myJid = sock.user?.id ? String(sock.user.id) : 'NOT-CONNECTED';
           const myLid = sock.user?.lid ? String(sock.user.lid) : 'NO-LID';
-          console.log(`[send] 📤 Sending from ${myJid} (LID: ${myLid}) to resolved JID: ${sendJid} (input: ${sendNum})`);
-          console.log(`[send]    isConnected=${isConnected}, sock.user=${!!sock.user}`);
+          console.log(`[send] 📤 Sending from ${myJid} to JID: ${sendJid} (resolved: ${isResolved})`);
 
-          // 3. Send message
+          // Send message
           const sentMsg = await sock.sendMessage(sendJid, { text: sendText });
-          console.log(`[send] ✅ Sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
+          console.log(`[send] ✅ Message successfully sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
           if (sentMsg?.key?.id) registerPendingDelivery(sentMsg.key.id, sendJid, sendText, sock);
-          
-          await sock.sendMessage(jid, { text: buildOmegaTerminal(
+
+          const successText = buildOmegaTerminal(
             `📤 *SENT*\n\n` +
-            `   🎯 *TO*       : ${sendNum}\n` +
+            `   🎯 *TARGET*   : ${targetArg}\n` +
             `   🔑 *JID*      : ${sendJid}\n` +
             `   📨 *MSG ID*   : ${sentMsg?.key?.id || 'pending'}\n` +
             `   📝 *PREVIEW*:\n` +
             `   ${sendText.slice(0, 200)}${sendText.length > 200 ? '...' : ''}\n\n` +
             `   ⏳ _Waiting for delivery ack_\n` +
-            `   🔄 _Auto-retry on timeout enabled_\n` +
-            `   💡 _Successfully fetched pre-keys via onWhatsApp to prevent silent drops._`
-          ), edit: statusMsg.key }, quotedOpts(msg));
+            `   💡 _Sent via robust, fail-safe routing (onWhatsApp fallback)._`
+          );
+
+          if (statusMsg?.key) {
+            await sock.sendMessage(jid, { text: successText, edit: statusMsg.key }, quotedOpts(msg));
+          } else {
+            await sock.sendMessage(jid, { text: successText }, quotedOpts(msg));
+          }
         } catch (e) {
-          console.log(`[send] ❌ Failed: ${e.message}`);
-          console.log(`[send]    isConnected=${isConnected}, sock.user=${!!sock.user}, myJid=${sock.user?.id}`);
+          console.log(`[send] ❌ Send operation failed: ${e.message}`);
           const errText = buildOmegaTerminal(
             `❌ *SEND FAILED*\n\n` +
             `   *Error:* ${e.message}\n\n` +
-            `   *Bot state:*\n` +
-            `   • Connected: ${isConnected}\n` +
-            `   • My JID: ${sock.user?.id || 'N/A'}\n\n` +
-            `   *Tip:* Check if the destination number\n` +
-            `   has WhatsApp installed.`
+            `   *Target:* ${targetArg}\n` +
+            `   *Bot state:* Connected: ${isConnected}\n\n` +
+            `   *Tips:*\n` +
+            `   1. If sending to a phone number, make sure\n` +
+            `      to include country code.\n` +
+            `   2. Check if the target number has WhatsApp.\n` +
+            `   3. Check if the bot has been blocked.`
           );
           if (statusMsg?.key) {
             await sock.sendMessage(jid, { text: errText, edit: statusMsg.key }, quotedOpts(msg));
