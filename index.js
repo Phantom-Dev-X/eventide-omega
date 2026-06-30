@@ -1879,7 +1879,7 @@ let pollCreationCache = {};
 // ── DELIVERY TRACKER ────────────────────────────────────────────────────
 // Tracks outbound delivery acknowledgements via messages.update.
 const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, attempts, sentAt, retried }
-const DELIVERY_TIMEOUT_MS = 8000;
+const DELIVERY_TIMEOUT_MS = 45000; // Increased to 45s to prevent aggressive timeouts on slow networks or self-chats
 
 function registerPendingDelivery(msgId, jid, text, sock) {
   if (!msgId) return;
@@ -1952,30 +1952,23 @@ async function handleDeliveryTimeout(msgId, pending) {
     return false;
   };
 
-  // Strategy 1: original was PN — retry with mapped LID
+  // Strategy 1: original was PN — retry with mapped LID (safe routing fallback)
   if (pending.jid.endsWith('@s.whatsapp.net')) {
     const lidForPn = findLidForPn(pending.jid);
     if (lidForPn) {
       const ok = await tryOne(lidForPn, 'PN→LID');
       if (ok) return;
     }
-    // No LID mapping — try PN with explicit device suffixes
-    // (sometimes the bot needs to specify a device to reach the recipient)
-    const pnNum = pending.jid.split('@')[0].split(':')[0];
-    const okPn29 = await tryOne(`${pnNum}:29@s.whatsapp.net`, 'PN:29');
-    if (okPn29) return;
-    const okPn0 = await tryOne(`${pnNum}:0@s.whatsapp.net`, 'PN:0');
-    if (okPn0) return;
+    // CRITICAL: We DO NOT force-send to explicit device suffixes like :29 or :0 anymore.
+    // In modern Baileys, trying to manually target device suffixes when there's no active session
+    // corrupts the encryption ratchets/pre-keys, which causes the message to get stuck with a clock
+    // icon on the phone and completely breaks the session.
   }
 
-  // Strategy 2: original was LID — try recipient's primary device (`:0`)
-  // We deliberately do NOT try `:29` (bot's device) because that triggers
-  // a 'not-acceptable' error from Baileys for most recipients.
+  // Strategy 2: original was LID
   if (pending.jid.endsWith('@lid')) {
-    const lidNum = pending.jid.split('@')[0].split(':')[0];
-    // Try with primary device (`:0`) — recipient's main phone
-    const ok0 = await tryOne(`${lidNum}:0@lid`, 'LID:0');
-    if (ok0) return;
+    // CRITICAL: We DO NOT force-send to explicit device suffixes like :0 anymore.
+    // This avoids corrupting encryption sessions.
   }
 
   // All retries exhausted
