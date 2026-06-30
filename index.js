@@ -5428,27 +5428,49 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
             // Query JID (best-effort)
             sendJid = sendNum + '@s.whatsapp.net'; // Default fallback
+            const rawPnJid = sendNum + '@s.whatsapp.net';
             
             // 1. Try our own locally loaded lid-mappings from the auth directory!
             const mappings = getLidMappings(sock.authDir || AUTH_DIR);
-            const rawPnJid = sendNum + '@s.whatsapp.net';
             if (mappings.pnToLid.has(rawPnJid)) {
               sendJid = mappings.pnToLid.get(rawPnJid);
               isResolved = true;
               console.log(`[send] 🎯 Resolved ${rawPnJid} to LID ${sendJid} via local lid-mapping file cache!`);
             } else {
-              // 2. Not found locally, query onWhatsApp as backup
+              // 2. Try Baileys' internal signalRepository LID mapping store (which queries USync if uncached)!
+              try {
+                if (sock.signalRepository?.lidMapping?.getLIDForPN) {
+                  const resolvedLid = await sock.signalRepository.lidMapping.getLIDForPN(rawPnJid);
+                  if (resolvedLid) {
+                    sendJid = resolvedLid;
+                    isResolved = true;
+                    console.log(`[send] 🎯 Resolved ${rawPnJid} to LID ${sendJid} via Baileys signalRepository.lidMapping!`);
+                  }
+                }
+              } catch (e) {
+                console.log(`[send] ⚠️ Baileys signalRepository query failed: ${e.message}`);
+              }
+            }
+
+            // 3. Fallback: If we still don't have an LID resolved, check if we can query onWhatsApp as backup
+            if (!isResolved) {
               try {
                 const onWhats = await sock.onWhatsApp(sendNum + '@s.whatsapp.net');
                 if (onWhats && onWhats.length > 0 && onWhats[0].exists) {
                   sendJid = onWhats[0].jid;
                   isResolved = true;
+                  console.log(`[send] 📡 Resolved via onWhatsApp query: ${sendJid}`);
                 } else {
                   console.log(`[send] ⚠️ onWhatsApp: Number not found on server, using direct fallback JID`);
                 }
               } catch (err) {
                 console.log(`[send] ⚠️ onWhatsApp server query failed: ${err.message}. Using direct fallback JID.`);
               }
+            }
+
+            // 4. Ensure any resolved LID doesn't have a device suffix
+            if (sendJid.includes('@lid') && sendJid.includes(':')) {
+              sendJid = sendJid.split(':')[0] + '@lid';
             }
           }
 
