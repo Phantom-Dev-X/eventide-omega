@@ -8962,32 +8962,70 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// Forgot password — Step 1: check email exists
+// ── Password-reset token store (in-memory, 15-minute TTL) ──
+// Tokens are NEVER sent in API responses — they are delivered out-of-band
+// via the private Telegram admin channel only.
+const pwResetTokens = {}; // { token: { email, expiresAt } }
+function pruneResetTokens() {
+  const now = Date.now();
+  for (const [t, v] of Object.entries(pwResetTokens)) {
+    if (v.expiresAt < now) delete pwResetTokens[t];
+  }
+}
+
+// Forgot password — Step 1: check email exists, dispatch token to Telegram admin channel
+// The token is NEVER included in the HTTP response; only the Telegram admin receives it.
 app.post('/api/auth/forgot-check', (req, res) => {
   const { email } = req.body;
   if (!email) return res.json({ ok: false, error: 'Email required' });
+
+  // If Telegram isn't configured there's no secure delivery channel — disable reset
+  if (!telegramBot || !TELEGRAM_BACKUP_CHANNEL) {
+    return res.json({ ok: false, error: 'Password reset is unavailable — Telegram is not configured. Contact the bot admin directly.' });
+  }
+
   loadWebUsers();
   const key = email.toLowerCase().trim();
-  if (!webUsers[key]) return res.json({ ok: false, error: 'No account found with this email' });
-  res.json({ ok: true });
+  // Use a constant-time response to avoid account enumeration
+  if (!webUsers[key]) {
+    // Indistinguishable from the success response to prevent enumeration
+    return res.json({ ok: true, message: 'If an account exists for that email, a reset token has been sent to the admin.' });
+  }
+
+  pruneResetTokens();
+  const token = crypto.randomBytes(24).toString('hex');
+  pwResetTokens[token] = { email: key, expiresAt: Date.now() + 15 * 60 * 1000 };
+
+  // Deliver token exclusively to the private Telegram admin channel
+  telegramBot.sendMessage(TELEGRAM_BACKUP_CHANNEL,
+    `🔐 *Password Reset Request*\n\n📧 Email: \`${key}\`\n👤 Name: ${webUsers[key].name || 'Unknown'}\n\n🔑 *Reset Token (share ONLY with the user):*\n\`${token}\`\n\n⏰ Expires in 15 minutes.\n\n— EVENTIDE OMEGA`,
+    { parse_mode: 'Markdown' }
+  ).catch(e => console.error('[reset] Telegram delivery failed:', e.message));
+
+  res.json({ ok: true, message: 'If an account exists for that email, a reset token has been sent to the admin.' });
 });
 
 // Forgot password — Step 2: set new password
+// Requires the out-of-band token that was sent to the Telegram admin channel in step 1.
 app.post('/api/auth/reset-password', (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.json({ ok: false, error: 'Email and password required' });
+  const { email, password, resetToken } = req.body;
+  if (!email || !password || !resetToken) return res.json({ ok: false, error: 'Email, password, and reset token required' });
   if (password.length < 6) return res.json({ ok: false, error: 'Password must be at least 6 characters' });
-  loadWebUsers();
   const key = email.toLowerCase().trim();
+  pruneResetTokens();
+  const entry = pwResetTokens[resetToken];
+  if (!entry || entry.email !== key || entry.expiresAt < Date.now()) {
+    return res.json({ ok: false, error: 'Invalid or expired reset token. Please request a new one.' });
+  }
+  delete pwResetTokens[resetToken]; // single-use
+  loadWebUsers();
   if (!webUsers[key]) return res.json({ ok: false, error: 'Account not found' });
   webUsers[key].password = hashPassword(password);
   saveWebUsers();
-  // Notify Telegram
   if (telegramBot && TELEGRAM_BACKUP_CHANNEL) {
     telegramBot.sendMessage(TELEGRAM_BACKUP_CHANNEL,
-      `🔐 *Password Reset*\n\n📧 Email: \`${key}\`\n👤 Name: ${webUsers[key].name || 'Unknown'}\n📅 ${new Date().toISOString()}\n\n— EVENTIDE OMEGA`, { parse_mode: 'Markdown' }).catch(() => {});
+      `✅ *Password Reset Complete*\n\n📧 Email: \`${key}\`\n👤 Name: ${webUsers[key].name || 'Unknown'}\n📅 ${new Date().toISOString()}\n\n— EVENTIDE OMEGA`, { parse_mode: 'Markdown' }).catch(() => {});
   }
-  // Trigger backup so the new password hash survives redeploys
   backupAuthToChannel(true).catch(() => {});
   res.json({ ok: true });
 });
@@ -9281,16 +9319,32 @@ app.get('/api/status', (req, res) => {
 // ══ SESSION API (Dashboard) ═════════════════
 // ═══════════════════════════════════════════
 
-// Get session sock by sessionId
-function getWebSock(sessionId) {
+// Resolve the authenticated user email from a request (cookie or Bearer token)
+function getAuthEmail(req) {
+  const token = req.cookies?.eo_token || req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return null;
+  const sess = webSessions[token];
+  if (!sess) return null;
+  return sess.email || null;
+}
+
+// Get session sock by sessionId — also verifies the caller owns the session.
+// Default-deny: if the session has no owner email recorded, access is denied
+// to prevent legacy/ownerless sessions from being accessible to any authenticated user.
+function getWebSock(sessionId, callerEmail) {
   const sess = webPairSessions[sessionId];
   if (!sess || sess.status !== 'connected') return null;
+  // Ownership check: callerEmail must match the session's recorded owner.
+  // Sessions with no recorded owner are denied to all callers (default-deny).
+  if (!sess.email || sess.email !== callerEmail) return null;
   return sess.sock || null;
 }
 
 // Session info
 app.get('/api/s/:sid/info', (req, res) => {
-  const sock = getWebSock(req.params.sid);
+  const email = getAuthEmail(req);
+  if (!email) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  const sock = getWebSock(req.params.sid, email);
   const sess = webPairSessions[req.params.sid];
   if (!sock || !sess) return res.json({ ok: false, error: 'Session not found' });
   res.json({
@@ -9307,7 +9361,9 @@ app.get('/api/s/:sid/info', (req, res) => {
 
 // List groups
 app.get('/api/s/:sid/groups', async (req, res) => {
-  const sock = getWebSock(req.params.sid);
+  const email = getAuthEmail(req);
+  if (!email) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  const sock = getWebSock(req.params.sid, email);
   if (!sock) return res.json({ ok: false, error: 'Session not found' });
   try {
     const groups = await sock.groupFetchAllParticipating();
@@ -9328,7 +9384,9 @@ app.get('/api/s/:sid/groups', async (req, res) => {
 
 // Send message
 app.post('/api/s/:sid/send', async (req, res) => {
-  const sock = getWebSock(req.params.sid);
+  const email = getAuthEmail(req);
+  if (!email) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  const sock = getWebSock(req.params.sid, email);
   if (!sock) return res.json({ ok: false, error: 'Session not found' });
   const { jid, message } = req.body;
   if (!jid || !message) return res.json({ ok: false, error: 'jid and message required' });
@@ -9340,7 +9398,9 @@ app.post('/api/s/:sid/send', async (req, res) => {
 
 // Group invite link
 app.get('/api/s/:sid/group/invite', async (req, res) => {
-  const sock = getWebSock(req.params.sid);
+  const email = getAuthEmail(req);
+  if (!email) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  const sock = getWebSock(req.params.sid, email);
   if (!sock) return res.json({ ok: false, error: 'Session not found' });
   const { jid } = req.query;
   if (!jid) return res.json({ ok: false, error: 'jid required' });
@@ -9352,7 +9412,9 @@ app.get('/api/s/:sid/group/invite', async (req, res) => {
 
 // Group leave
 app.post('/api/s/:sid/group/leave', async (req, res) => {
-  const sock = getWebSock(req.params.sid);
+  const email = getAuthEmail(req);
+  if (!email) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  const sock = getWebSock(req.params.sid, email);
   if (!sock) return res.json({ ok: false, error: 'Session not found' });
   const { groupJid } = req.body;
   if (!groupJid) return res.json({ ok: false, error: 'groupJid required' });
@@ -9364,7 +9426,9 @@ app.post('/api/s/:sid/group/leave', async (req, res) => {
 
 // Group revoke invite
 app.post('/api/s/:sid/group/revoke', async (req, res) => {
-  const sock = getWebSock(req.params.sid);
+  const email = getAuthEmail(req);
+  if (!email) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  const sock = getWebSock(req.params.sid, email);
   if (!sock) return res.json({ ok: false, error: 'Session not found' });
   const { groupJid } = req.body;
   if (!groupJid) return res.json({ ok: false, error: 'groupJid required' });
@@ -9376,7 +9440,9 @@ app.post('/api/s/:sid/group/revoke', async (req, res) => {
 
 // Toggle group settings
 app.post('/api/s/:sid/toggle', async (req, res) => {
-  const sock = getWebSock(req.params.sid);
+  const email = getAuthEmail(req);
+  if (!email) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  const sock = getWebSock(req.params.sid, email);
   if (!sock) return res.json({ ok: false, error: 'Session not found' });
   const { groupJid, setting, value } = req.body;
   try {
@@ -9388,12 +9454,16 @@ app.post('/api/s/:sid/toggle', async (req, res) => {
 
 // SSE Stream (basic)
 app.get('/api/s/:sid/stream', (req, res) => {
+  const email = getAuthEmail(req);
+  if (!email) { res.status(401).end(); return; }
+  const sess = webPairSessions[req.params.sid];
+  if (!sess || (sess.email && sess.email !== email)) { res.status(403).end(); return; }
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
   res.write('data: {"type":"connected"}\n\n');
   const interval = setInterval(() => {
-    const sess = webPairSessions[req.params.sid];
-    if (sess) {
-      res.write(`data: ${JSON.stringify({ type: 'status', connected: sess.status === 'connected' })}\n\n`);
+    const s = webPairSessions[req.params.sid];
+    if (s) {
+      res.write(`data: ${JSON.stringify({ type: 'status', connected: s.status === 'connected' })}\n\n`);
     }
   }, 5000);
   req.on('close', () => clearInterval(interval));

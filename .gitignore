@@ -6,8 +6,9 @@ node_modules/
 auth_info/
 auth_info_*/
 
-# Root-level creds.json (sometimes dropped by baileys — never commit)
+# Root-level creds.json and pre-key files (dropped by baileys — never commit)
 creds.json
+pre-key-*.json
 
 # Telegram session backup zips
 *.zip

@@ -66,8 +66,15 @@
         <button class="btn" id="btn1" onclick="verifyEmail()">Continue</button>
     </div>
 
-    <!-- Step 2: Enter new password -->
+    <!-- Step 2: Enter token (from admin) + new password -->
     <div class="step" id="step2">
+        <div class="form-group">
+            <label class="label">Reset Token</label>
+            <div class="input-wrap">
+                <svg viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                <input type="text" id="resettoken" placeholder="Token provided by admin" autocomplete="off" spellcheck="false">
+            </div>
+        </div>
         <div class="form-group">
             <label class="label">New Password</label>
             <div class="input-wrap">
@@ -142,7 +149,7 @@
                 resetEmail = email;
                 document.getElementById('step1').classList.remove('active');
                 document.getElementById('step2').classList.add('active');
-                document.getElementById('subtitle').textContent = 'Create a new password for ' + email;
+                document.getElementById('subtitle').textContent = 'Enter the token provided by your admin, then set a new password.';
             } else {
                 showErr(d.error || 'Email not found.');
             }
@@ -168,7 +175,7 @@
             const r = await fetch('/api/auth/reset-password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: resetEmail, password: pass }),
+                body: JSON.stringify({ email: resetEmail, password: pass, resetToken: document.getElementById('resettoken').value.trim() }),
             });
             const d = await r.json();
             if (d.ok) {
