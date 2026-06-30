@@ -8429,31 +8429,30 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
       
       setTimeout(async () => {
         try {
-          const selfJid = sock.user?.id;
-          if (!selfJid) return;
+          let selfJid = sock.user?.id;
+          if (!selfJid) {
+            console.log('[self-chat] ⚠️ Cannot send connected message: sock.user.id is null');
+            return;
+          }
+          // Clean any device suffix (e.g. "2348012345678:0@s.whatsapp.net" -> "2348012345678@s.whatsapp.net")
+          if (selfJid.includes(':')) {
+            selfJid = selfJid.split(':')[0] + '@s.whatsapp.net';
+          }
+          
           let body;
           if (connectOrigin === 'restore') {
-            body = `🌑 *PHANTOM-X RESTORED* · 👁
-
-   Session resurrected from
-   Telegram backup channel.
-
-   " *I do not die. I only*
-     *wait for the next call* ."`;
+            body = `🌑 *PHANTOM-X RESTORED* · 👁\n\n   Session resurrected from\n   Telegram backup channel.\n\n   " *I do not die. I only*\n     *wait for the next call* ."`;
           } else if (connectOrigin === 'pair' || connectOrigin === 'boot') {
-            body = `🌑 *PHANTOM-X IS ONLINE* · 👁
-
-   Type *.help* to explore
-   the codex.
-
-   " *An echo in the void is*
-     *the only proof you exist* ."`;
+            body = `🌑 *PHANTOM-X IS ONLINE* · 👁\n\n   Type *.help* to explore\n   the codex.\n\n   " *An echo in the void is*\n     *the only proof you exist* ."`;
           } else {
             return; // silent reconnect — don't spam self-chat on every minor reconnect
           }
+          
+          console.log(`[self-chat] 📤 Sending connected message to self (${selfJid}) via origin=${connectOrigin}`);
           await sock.sendMessage(selfJid, { text: buildOmegaTerminal(body) });
-        } catch (e) { console.error('[self-chat]', e.message); }
-      }, 2000);
+          console.log('[self-chat] ✅ Connected message successfully sent!');
+        } catch (e) { console.error('[self-chat] ❌ Failed to send connected message:', e.message); }
+      }, 6000);
       await backupAuthToChannel();
       if (telegramCtx) {
         if (connectOrigin === 'restore') {
