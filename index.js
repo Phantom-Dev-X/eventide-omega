@@ -8078,22 +8078,22 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     hasSentSelfConnectMsg = true;
     
     try {
-      let selfJid = sock.user?.id;
+      const { jidNormalizedUser } = require('@whiskeysockets/baileys');
+      let selfJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : '';
       if (!selfJid) {
         console.log(`[self-chat] [${label}] ⚠️ Cannot send connected message: sock.user.id is null`);
         hasSentSelfConnectMsg = false; // allow retry
         return;
       }
-      // Clean any device suffix (e.g. "2348012345678:0@s.whatsapp.net" -> "2348012345678@s.whatsapp.net")
-      if (selfJid.includes(':')) {
-        selfJid = selfJid.split(':')[0] + '@s.whatsapp.net';
-      }
       
       let body;
+      let tgBody;
       if (connectOrigin === 'restore') {
         body = `🌑 *PHANTOM-X RESTORED* · 👁\n\n   Session resurrected from\n   Telegram backup channel.\n\n   " *I do not die. I only*\n     *wait for the next call* ."`;
+        tgBody = `🟢 *PHANTOM-X RESTORED FROM BACKUP!* 🌑\n\nYour WhatsApp session has successfully reconnected via Telegram pinned backup auto-restore.\n\n— *EVENTIDE OMEGA* · 👁`;
       } else if (connectOrigin === 'pair' || connectOrigin === 'boot') {
         body = `🌑 *PHANTOM-X IS ONLINE* · 👁\n\n   Type *.help* to explore\n   the codex.\n\n   " *An echo in the void is*\n     *the only proof you exist* ."`;
+        tgBody = `🟢 *PHANTOM-X IS ONLINE!* 🌑\n\nYour WhatsApp is connected and running.\n\n— *EVENTIDE OMEGA* · 👁`;
       } else {
         return; // silent reconnect — don't spam self-chat on every minor reconnect
       }
@@ -8101,6 +8101,13 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
       console.log(`[self-chat] [${label}] 📤 Sending connected message to self (${selfJid}) via origin=${connectOrigin}`);
       await sock.sendMessage(selfJid, { text: buildOmegaTerminal(body) });
       console.log(`[self-chat] [${label}] ✅ Connected message successfully sent!`);
+
+      // Fallback: Also notify the private Telegram Backup Channel so you ALWAYS see when the bot connects!
+      if (TELEGRAM_BACKUP_CHANNEL && telegramBot && tgBody) {
+        telegramBot.sendMessage(TELEGRAM_BACKUP_CHANNEL, tgBody, { parse_mode: 'Markdown' }).catch((err) => {
+          console.error('[tg-notify] Failed to send connect message to channel:', err.message);
+        });
+      }
     } catch (e) {
       console.error(`[self-chat] [${label}] ❌ Failed to send connected message:`, e.message);
       hasSentSelfConnectMsg = false; // allow retry
