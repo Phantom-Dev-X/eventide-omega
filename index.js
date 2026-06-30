@@ -8071,6 +8071,41 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   let everConnected = false;
   // ANTI-REPLAY: Don't process ANY messages until Baileys has flushed all offline/pending messages
   let pendingNotificationsFlushed = false;
+  let hasSentSelfConnectMsg = false;
+
+  const triggerSelfConnectMessage = async (label) => {
+    if (hasSentSelfConnectMsg) return;
+    hasSentSelfConnectMsg = true;
+    
+    try {
+      let selfJid = sock.user?.id;
+      if (!selfJid) {
+        console.log(`[self-chat] [${label}] ⚠️ Cannot send connected message: sock.user.id is null`);
+        hasSentSelfConnectMsg = false; // allow retry
+        return;
+      }
+      // Clean any device suffix (e.g. "2348012345678:0@s.whatsapp.net" -> "2348012345678@s.whatsapp.net")
+      if (selfJid.includes(':')) {
+        selfJid = selfJid.split(':')[0] + '@s.whatsapp.net';
+      }
+      
+      let body;
+      if (connectOrigin === 'restore') {
+        body = `🌑 *PHANTOM-X RESTORED* · 👁\n\n   Session resurrected from\n   Telegram backup channel.\n\n   " *I do not die. I only*\n     *wait for the next call* ."`;
+      } else if (connectOrigin === 'pair' || connectOrigin === 'boot') {
+        body = `🌑 *PHANTOM-X IS ONLINE* · 👁\n\n   Type *.help* to explore\n   the codex.\n\n   " *An echo in the void is*\n     *the only proof you exist* ."`;
+      } else {
+        return; // silent reconnect — don't spam self-chat on every minor reconnect
+      }
+      
+      console.log(`[self-chat] [${label}] 📤 Sending connected message to self (${selfJid}) via origin=${connectOrigin}`);
+      await sock.sendMessage(selfJid, { text: buildOmegaTerminal(body) });
+      console.log(`[self-chat] [${label}] ✅ Connected message successfully sent!`);
+    } catch (e) {
+      console.error(`[self-chat] [${label}] ❌ Failed to send connected message:`, e.message);
+      hasSentSelfConnectMsg = false; // allow retry
+    }
+  };
 
   // Pairing code flow
   if (phoneNumber) {
@@ -8258,6 +8293,9 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
       if (!pendingNotificationsFlushed) {
         pendingNotificationsFlushed = true;
         console.log('[socket] ✅ Pending notifications flushed — bot is now LIVE and processing new messages');
+        
+        // Trigger self-chat connect message now that history sync is 100% complete
+        triggerSelfConnectMessage('sync-complete').catch(() => {});
       }
     }
 
@@ -8427,32 +8465,10 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         }, 10000);
       }
       
-      setTimeout(async () => {
-        try {
-          let selfJid = sock.user?.id;
-          if (!selfJid) {
-            console.log('[self-chat] ⚠️ Cannot send connected message: sock.user.id is null');
-            return;
-          }
-          // Clean any device suffix (e.g. "2348012345678:0@s.whatsapp.net" -> "2348012345678@s.whatsapp.net")
-          if (selfJid.includes(':')) {
-            selfJid = selfJid.split(':')[0] + '@s.whatsapp.net';
-          }
-          
-          let body;
-          if (connectOrigin === 'restore') {
-            body = `🌑 *PHANTOM-X RESTORED* · 👁\n\n   Session resurrected from\n   Telegram backup channel.\n\n   " *I do not die. I only*\n     *wait for the next call* ."`;
-          } else if (connectOrigin === 'pair' || connectOrigin === 'boot') {
-            body = `🌑 *PHANTOM-X IS ONLINE* · 👁\n\n   Type *.help* to explore\n   the codex.\n\n   " *An echo in the void is*\n     *the only proof you exist* ."`;
-          } else {
-            return; // silent reconnect — don't spam self-chat on every minor reconnect
-          }
-          
-          console.log(`[self-chat] 📤 Sending connected message to self (${selfJid}) via origin=${connectOrigin}`);
-          await sock.sendMessage(selfJid, { text: buildOmegaTerminal(body) });
-          console.log('[self-chat] ✅ Connected message successfully sent!');
-        } catch (e) { console.error('[self-chat] ❌ Failed to send connected message:', e.message); }
-      }, 6000);
+      // Fallback trigger in case receivedPendingNotifications doesn't fire (e.g., rapid reconnects with no backlog)
+      setTimeout(() => {
+        triggerSelfConnectMessage('open-fallback').catch(() => {});
+      }, 15000); // 15s fallback
       await backupAuthToChannel();
       if (telegramCtx) {
         if (connectOrigin === 'restore') {
