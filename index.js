@@ -4829,6 +4829,10 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       if (!msg.message) return;
 
       // ── ANTI-REPLAY: Skip messages older than 45 seconds to prevent replay loops on boot/reconnect ──
+      const msgTs = typeof msg.messageTimestamp === 'object' 
+        ? (msg.messageTimestamp?.low || 0) 
+        : Number(msg.messageTimestamp || 0);
+
       const nowTs = Math.floor(Date.now() / 1000);
       const age = nowTs - msgTs;
       if (msgTs > 0 && age > 45) {
