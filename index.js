@@ -2,15 +2,15 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-// Resolve legacy 'baileys' and '@whiskeysockets/baileys' imports to @nexustechpro/baileys.
+// Resolve legacy 'baileys' imports to @whiskeysockets/baileys.
 const Module = require('module');
 const _origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
-  if (request === 'baileys' || request === '@whiskeysockets/baileys') return _origResolve('@nexustechpro/baileys', ...rest);
+  if (request === 'baileys') return _origResolve('@whiskeysockets/baileys', ...rest);
   return _origResolve(request, ...rest);
 };
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType } = require('@nexustechpro/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
 const TelegramBot = require('node-telegram-bot-api');
@@ -31,12 +31,12 @@ try {
 // Optional Baileys poll vote aggregation helper.
 let getAggregateVotesInPollMessage = null;
 try {
-  const baileys = require('@nexustechpro/baileys');
+  const baileys = require('@whiskeysockets/baileys');
   getAggregateVotesInPollMessage = baileys.getAggregateVotesInPollMessage;
   console.log('[poll] Advanced poll vote helper loaded');
 } catch (_) {
   try {
-    const baileys = require('@nexustechpro/baileys');
+    const baileys = require('@whiskeysockets/baileys');
     getAggregateVotesInPollMessage = baileys.getAggregateVotesInPollMessage;
   } catch (_) {}
 }
@@ -1878,31 +1878,24 @@ let pollCreationCache = {};
 
 // ── DELIVERY TRACKER ────────────────────────────────────────────────────
 // Tracks outbound delivery acknowledgements via messages.update.
-const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, sentAt, sock, retried }
-const DELIVERY_TIMEOUT_MS = 30000; // Safe 30s timeout
+const pendingDeliveries = new Map();  // key: msgId, value: { jid, originalText, attempts, sentAt, retried }
+const DELIVERY_TIMEOUT_MS = 8000;
 
 function registerPendingDelivery(msgId, jid, text, sock) {
   if (!msgId) return;
-
-  // Prevent memory leaks / resource exhaustion (especially on free cloud platforms)
-  // by capping the active tracker list to the last 100 outbound messages.
-  if (pendingDeliveries.size >= 100) {
-    const oldestKey = pendingDeliveries.keys().next().value;
-    pendingDeliveries.delete(oldestKey);
-  }
-
   pendingDeliveries.set(msgId, {
     jid,
     text,
-    sock,
+    sock,        // CRITICAL: pass the socket so retry can use the same one
+    attempts: 1,
     sentAt: Date.now(),
     retried: false,
   });
-
-  // Schedule a safe timeout check
+  // Schedule a timeout check
   setTimeout(() => {
     const pending = pendingDeliveries.get(msgId);
-    if (pending && !pending.retried) {
+    if (pending) {
+      // Still pending after timeout — retry to LID if we have a mapping
       handleDeliveryTimeout(msgId, pending).catch(() => {});
     }
   }, DELIVERY_TIMEOUT_MS);
@@ -1910,15 +1903,88 @@ function registerPendingDelivery(msgId, jid, text, sock) {
 
 async function handleDeliveryTimeout(msgId, pending) {
   const sock = pending.sock;
+  // Check socket is still alive (sock.user is set when connected)
   if (!sock || !sock.user) {
+    console.log(`[delivery] ⏰ Timeout — socket disconnected or unavailable for ${msgId} (target=${pending.jid})`);
     pendingDeliveries.delete(msgId);
     return;
   }
-  
-  // LOG AS "ACK NOT OBSERVED" INSTEAD OF TRATING IT AS A FAIL-ALARM FAILURE!
-  // WhatsApp's native protocol and server guarantees delivery once the message has left the client.
-  // Missing delivery status events (status >= 2) is extremely common in DMs and LID-based chats.
-  console.log(`[delivery] ℹ️ Msg ${msgId} (target=${pending.jid}) delivery ack not observed within ${DELIVERY_TIMEOUT_MS}ms. Handoff was already successful on the socket.`);
+  console.log(`[delivery] ⏰ Timeout — no delivery ack in ${DELIVERY_TIMEOUT_MS}ms for ${msgId} (target=${pending.jid})`);
+  if (pending.retried) {
+    console.log(`[delivery] ❌ Already retried once — giving up on ${msgId}`);
+    pendingDeliveries.delete(msgId);
+    return;
+  }
+  pending.retried = true;
+
+  // Try multiple fallback strategies in order (NO PN-from-LID guessing):
+  // 1. If pending.jid is PN, find mapped LID and retry there
+  // 2. If pending.jid is LID, try recipient's primary device (`:0`)
+  // NOTE: We do NOT construct PN from LID — that's guessing which can route
+  // to a wrong contact. Only retries with mapped data are safe.
+  //
+  // CRITICAL: Retries are NOT registered for delivery tracking. If we
+  // tracked them, the retry's sendMessage would produce another inbox
+  // event, which times out, which triggers another retry — INFINITE LOOP.
+  // The retry Promise resolution is our best-effort confirmation.
+  const tried = [];
+  let hardErrorEncountered = false;
+  const tryOne = async (target, label) => {
+    if (!target || tried.includes(target)) return false;
+    tried.push(target);
+    try {
+      const r = await sock.sendMessage(target, { text: pending.text });
+      console.log(`[delivery] 🔄 RETRY[${label}] → ${target} (msgId=${r?.key?.id})`);
+      // NOTE: deliberately NOT registering for delivery tracking here.
+      // The retry is the last attempt. If it fails, we give up cleanly
+      // instead of looping forever. See: previous bug where retries
+      // registered for tracking created an infinite retry loop.
+      return true;
+    } catch (e) {
+      const errMsg = e.message?.slice(0, 80) || 'unknown';
+      console.log(`[delivery] ⚠️ RETRY[${label}] failed: ${errMsg}`);
+      // 'not-acceptable' / 'bad-request' means the JID format is wrong —
+      // bail out immediately, more retries won't help.
+      if (/not-acceptable|bad-request|invalid/i.test(errMsg)) {
+        hardErrorEncountered = true;
+      }
+    }
+    return false;
+  };
+
+  // Strategy 1: original was PN — retry with mapped LID
+  if (pending.jid.endsWith('@s.whatsapp.net')) {
+    const lidForPn = findLidForPn(pending.jid);
+    if (lidForPn) {
+      const ok = await tryOne(lidForPn, 'PN→LID');
+      if (ok) return;
+    }
+    // No LID mapping — try PN with explicit device suffixes
+    // (sometimes the bot needs to specify a device to reach the recipient)
+    const pnNum = pending.jid.split('@')[0].split(':')[0];
+    const okPn29 = await tryOne(`${pnNum}:29@s.whatsapp.net`, 'PN:29');
+    if (okPn29) return;
+    const okPn0 = await tryOne(`${pnNum}:0@s.whatsapp.net`, 'PN:0');
+    if (okPn0) return;
+  }
+
+  // Strategy 2: original was LID — try recipient's primary device (`:0`)
+  // We deliberately do NOT try `:29` (bot's device) because that triggers
+  // a 'not-acceptable' error from Baileys for most recipients.
+  if (pending.jid.endsWith('@lid')) {
+    const lidNum = pending.jid.split('@')[0].split(':')[0];
+    // Try with primary device (`:0`) — recipient's main phone
+    const ok0 = await tryOne(`${lidNum}:0@lid`, 'LID:0');
+    if (ok0) return;
+  }
+
+  // All retries exhausted
+  if (hardErrorEncountered) {
+    console.log(`[delivery] ❌ Hard error encountered — JID format invalid, no point retrying`);
+  } else {
+    console.log(`[delivery] ❌ All ${tried.length} retry strategies failed for ${msgId}`);
+  }
+  console.log(`[delivery]    💡 Tip: have the contact send a message first — refreshes the encryption session`);
   pendingDeliveries.delete(msgId);
 }
 
@@ -4171,80 +4237,6 @@ async function handleMenuButton(sock, jid, msg, buttonId) {
 // ── Helpers ─────────────────────────────────────────────────────────────
 function normalizeNum(input) { return String(input || '').replace(/[^\d]/g, ''); }
 
-// Load all persistent LID-to-PN and PN-to-LID mappings from Baileys auth files
-function getLidMappings(authDir) {
-  const pnToLid = new Map();
-  const lidToPn = new Map();
-  
-  try {
-    if (!fs.existsSync(authDir)) return { pnToLid, lidToPn };
-    const files = fs.readdirSync(authDir);
-    for (const f of files) {
-      if (f.startsWith('lid-mapping-') && f.endsWith('.json')) {
-        const filePath = path.join(authDir, f);
-        const content = fs.readFileSync(filePath, 'utf8');
-        const parsed = JSON.parse(content);
-        
-        let foundLid = '';
-        let foundPn = '';
-        
-        const search = (obj) => {
-          if (!obj || typeof obj !== 'object') return;
-          for (const [k, v] of Object.entries(obj)) {
-            if (typeof v === 'string') {
-              if (v.endsWith('@lid')) foundLid = v;
-              else if (v.endsWith('@s.whatsapp.net')) foundPn = v;
-            } else if (typeof v === 'object') {
-              search(v);
-            }
-          }
-        };
-        
-        search(parsed);
-        
-        const keyId = f.replace('lid-mapping-', '').replace('_rev.json', '').replace('.json', '');
-        if (keyId.endsWith('@lid') || /^\d+$/.test(keyId)) {
-          const cleanLid = keyId.includes('@') ? keyId : keyId + '@lid';
-          foundLid = foundLid || cleanLid;
-        } else if (keyId.endsWith('@s.whatsapp.net')) {
-          foundPn = foundPn || keyId;
-        }
-        
-        if (foundLid && foundPn) {
-          pnToLid.set(foundPn, foundLid);
-          lidToPn.set(foundLid, foundPn);
-        } else if (parsed && typeof parsed === 'string') {
-          const val = parsed;
-          if (val.endsWith('@lid') && keyId.endsWith('@s.whatsapp.net')) {
-            pnToLid.set(keyId, val);
-            lidToPn.set(val, keyId);
-          } else if (val.endsWith('@s.whatsapp.net') && (keyId.endsWith('@lid') || /^\d+$/.test(keyId))) {
-            const cleanLid = keyId.includes('@') ? keyId : keyId + '@lid';
-            pnToLid.set(val, cleanLid);
-            lidToPn.set(cleanLid, val);
-          }
-        } else if (parsed && typeof parsed === 'object' && parsed.val) {
-          const val = parsed.val;
-          if (typeof val === 'string') {
-            if (val.endsWith('@lid') && keyId.endsWith('@s.whatsapp.net')) {
-              pnToLid.set(keyId, val);
-              lidToPn.set(val, keyId);
-            } else if (val.endsWith('@s.whatsapp.net') && (keyId.endsWith('@lid') || /^\d+$/.test(keyId))) {
-              const cleanLid = keyId.includes('@') ? keyId : keyId + '@lid';
-              pnToLid.set(val, cleanLid);
-              lidToPn.set(cleanLid, val);
-            }
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.error('[lid-mapping-loader] Error reading lid-mapping files:', e.message);
-  }
-  
-  return { pnToLid, lidToPn };
-}
-
 // Generate a fresh, random, unambiguous 8-char pairing code.
 // We always pass an explicit random code so pairing stays deterministic and
 // never depends on any library default/fallback value.
@@ -4359,7 +4351,7 @@ async function detectAccountType(sock, replyTo = null) {
     
     // Check using Baileys' isWABusinessPlatform if available
     try {
-      const { isWABusinessPlatform } = require('@nexustechpro/baileys');
+      const { isWABusinessPlatform } = require('@whiskeysockets/baileys');
       if (typeof isWABusinessPlatform === 'function') {
         detectedBusiness = isWABusinessPlatform(platform);
         console.log(`[ACCOUNT] isWABusinessPlatform("${platform}") = ${detectedBusiness}`);
@@ -4794,15 +4786,18 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       if (type !== 'notify' && type !== 'append') return;
       if (!msg.message) return;
 
-      // ── ANTI-REPLAY: Skip messages older than 45 seconds to prevent replay loops on boot/reconnect ──
+      // ── ANTI-REPLAY: Dead simple — only process msgs timestamped AFTER we connected ──
       const msgTs = typeof msg.messageTimestamp === 'object' 
         ? (msg.messageTimestamp?.low || 0) 
         : Number(msg.messageTimestamp || 0);
-
-      const nowTs = Math.floor(Date.now() / 1000);
-      const age = nowTs - msgTs;
-      if (msgTs > 0 && age > 45) {
-        console.log(`[skip] Old msg skipped — age: ${age}s (ts=${msgTs}, now=${nowTs}) from=${msg.key?.remoteJid}`);
+      
+      if (!firstConnRef.time) {
+        // Not connected yet — drop silently
+        return;
+      }
+      
+      if (msgTs > 0 && msgTs <= firstConnRef.time) {
+        console.log(`[skip] Old msg (ts=${msgTs} <= conn=${firstConnRef.time}) from=${msg.key?.remoteJid}`);
         return;
       }
 
@@ -4823,19 +4818,10 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
                      : 'unknown';
       console.log(`[inbox] ${_msgType} remoteJid=${rawJid} senderPn=${msg.key?.senderPn || '-'} fromMe=${msg.key.fromMe} id=${msg.key.id}`);
 
-      // Baileys v7 has native LID handling, but sending directly to @lid is unstable on some forks.
-      // We check if we have a locally mapped stable phone JID (@s.whatsapp.net) for this LID,
-      // and use it to reply instead to guarantee delivery!
+      // Baileys v7 has native LID handling, so reply to the exact chat JID received.
       if (String(rawJid || '').endsWith('@lid')) {
-        const mappings = getLidMappings(sock.authDir || AUTH_DIR);
-        if (mappings.lidToPn.has(rawJid)) {
-          const pnJid = mappings.lidToPn.get(rawJid);
-          console.log(`[lid] 🎯 Resolved incoming LID DM JID ${rawJid} to stable phone JID ${pnJid} using local mapping!`);
-          jid = pnJid;
-        } else {
-          console.log(`[lid] using native v7 chat jid: ${rawJid} (no phone mapping found)`);
-          jid = rawJid;
-        }
+        console.log(`[lid] using native v7 chat jid: ${rawJid}`);
+        jid = rawJid;
       }
 
 
@@ -5170,7 +5156,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           // POLL FIX: Attempt Decryption with LID/PN JID brute-force (fixes WhatsApp E2EE issue)
           if (pollUpdate.vote && pollSecretHex) {
             try {
-              const { decryptPollVote, jidNormalizedUser } = require('@nexustechpro/baileys');
+              const { decryptPollVote, jidNormalizedUser } = require('@whiskeysockets/baileys');
               const crypto = require('crypto');
               const rawSecretBuffer = Buffer.from(pollSecretHex, 'hex');
 
@@ -5385,177 +5371,74 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         return;
       }
 
-      // ── .send <target> [text] — send a message to any number or JID (owner only) ──
+      // ── .send <number> [text] — send a message to any number (owner only) ──
       if (lower === '.send' || lower.startsWith('.send ')) {
         if (!senderIsOwner) {
           await sock.sendMessage(jid, { text: buildOmegaTerminal('🔒 *ACCESS_DENIED*\n\n   only the sovereign may\n   command the void to\n   deliver messages.') }, quotedOpts(msg));
           return;
         }
-        
         const sendArgs = text.slice(5).trim();
-        if (!sendArgs) {
+        // Try to extract number and optional message
+        // Formats accepted: ".send 2349029675308", ".send 2349029675308 hello world"
+        const sendMatch = sendArgs.match(/^(\+?\d{7,15})\s*(.*)$/s);
+        if (!sendMatch) {
           await sock.sendMessage(jid, { text: buildOmegaTerminal(
             `📤 *SEND COMMAND*\n\n` +
             `*Usage:*\n` +
-            `  .send <number/JID>          — send default ping\n` +
-            `  .send <number/JID> <text>   — send custom text\n\n` +
+            `  .send <number>          — send default ping\n` +
+            `  .send <number> <text>   — send custom text\n\n` +
             `*Examples:*\n` +
             `  .send 2349029675308\n` +
-            `  .send 120363200000000000@g.us Hello Group!\n` +
             `  .send +1 555 123 4567 Hello from Eventide Omega\n\n` +
             `*Notes:*\n` +
             `  • Owner-only command\n` +
-            `  • Sends to both raw phone numbers and group/direct JIDs\n` +
-            `  • Fail-safe fallback — sends directly even if onWhatsApp check fails`
+            `  • Sends from the bot's WhatsApp account\n` +
+            `  • Number must include country code (no + needed)\n` +
+            `  • Delivery tracked — retry to LID if first send fails`
           ) }, quotedOpts(msg));
           return;
         }
-
-        // Parse target and custom message
-        const spaceIndex = sendArgs.indexOf(' ');
-        let targetArg = '';
-        let sendText = '';
-        if (spaceIndex !== -1) {
-          targetArg = sendArgs.slice(0, spaceIndex).trim();
-          sendText = sendArgs.slice(spaceIndex).trim();
-        } else {
-          targetArg = sendArgs.trim();
+        const sendNum = normalizeNum(sendMatch[1]);
+        const sendText = sendMatch[2].trim() || `            — *E V E N T I D E · O M E G A* —\n\n   ⚡ *SIGNAL*\n\n   " *An echo in the void is*\n     *the only proof you exist* ."\n\n   📡 _Sent via Phantom-X_`;
+        const sendJid = sendNum + '@s.whatsapp.net';
+        if (!/^\d{10,15}$/.test(sendNum)) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(
+            `❌ *Invalid number*\n\n   "${sendMatch[1]}" no be valid.\n   Use country code without +\n   e.g. 2349029675308`
+          ) }, quotedOpts(msg));
+          return;
         }
-        
-        sendText = sendText || `            — *E V E N T I D E · O M E G A* —\n\n   ⚡ *SIGNAL*\n\n   " *An echo in the void is*\n     *the only proof you exist* ."\n\n   📡 _Sent via Phantom-X_`;
-
-        let sendJid = '';
-        let isResolved = false;
-        let isGroup = false;
-
-        let statusMsg = null;
         try {
-          // Check if target is already a formatted JID
-          if (targetArg.includes('@')) {
-            sendJid = targetArg;
-            isResolved = true;
-            isGroup = targetArg.endsWith('@g.us');
-          } else {
-            const sendNum = normalizeNum(targetArg);
-            if (!/^\d{8,15}$/.test(sendNum)) {
-              await sock.sendMessage(jid, { text: buildOmegaTerminal(
-                `❌ *Invalid Target*\n\n   "${targetArg}" is not a valid\n   number or formatted JID.`
-              ) }, quotedOpts(msg));
-              return;
-            }
-            
-            // Send resolution loading message
-            statusMsg = await sock.sendMessage(jid, { text: buildOmegaTerminal(
-              `⏳ *RESOLVING TARGET...*\n\n` +
-              `   Querying WhatsApp servers for\n   number: ${sendNum}...\n\n` +
-              `   _Fetching pre-keys to prevent\n   silent delivery drops._`
-            ) }, quotedOpts(msg));
-
-            // Query JID (best-effort)
-            sendJid = sendNum + '@s.whatsapp.net'; // Default fallback
-            const rawPnJid = sendNum + '@s.whatsapp.net';
-            
-            // 1. Try our own locally loaded lid-mappings from the auth directory!
-            const mappings = getLidMappings(sock.authDir || AUTH_DIR);
-            if (mappings.pnToLid.has(rawPnJid)) {
-              sendJid = mappings.pnToLid.get(rawPnJid);
-              isResolved = true;
-              console.log(`[send] 🎯 Resolved ${rawPnJid} to LID ${sendJid} via local lid-mapping file cache!`);
-            } else {
-              // 2. Try Baileys' internal signalRepository LID mapping store (which queries USync if uncached)!
-              try {
-                if (sock.signalRepository?.lidMapping?.getLIDForPN) {
-                  const resolvedLid = await sock.signalRepository.lidMapping.getLIDForPN(rawPnJid);
-                  if (resolvedLid) {
-                    sendJid = resolvedLid;
-                    isResolved = true;
-                    console.log(`[send] 🎯 Resolved ${rawPnJid} to LID ${sendJid} via Baileys signalRepository.lidMapping!`);
-                  }
-                }
-              } catch (e) {
-                console.log(`[send] ⚠️ Baileys signalRepository query failed: ${e.message}`);
-              }
-            }
-
-            // 3. Fallback: If we still don't have an LID resolved, check if we can query onWhatsApp as backup
-            if (!isResolved) {
-              try {
-                const onWhats = await sock.onWhatsApp(sendNum + '@s.whatsapp.net');
-                if (onWhats && onWhats.length > 0 && onWhats[0].exists) {
-                  sendJid = onWhats[0].jid;
-                  isResolved = true;
-                  console.log(`[send] 📡 Resolved via onWhatsApp query: ${sendJid}`);
-                } else {
-                  console.log(`[send] ⚠️ onWhatsApp: Number not found on server, using direct fallback JID`);
-                }
-              } catch (err) {
-                console.log(`[send] ⚠️ onWhatsApp server query failed: ${err.message}. Using direct fallback JID.`);
-              }
-            }
-
-            // 4. Ensure any resolved LID doesn't have a device suffix
-            if (sendJid.includes('@lid') && sendJid.includes(':')) {
-              sendJid = sendJid.split(':')[0] + '@lid';
-            }
-          }
-
-          // Diagnostic logging
+          // Diagnostic logging — helps us see exactly what state the bot is in
           const myJid = sock.user?.id ? String(sock.user.id) : 'NOT-CONNECTED';
           const myLid = sock.user?.lid ? String(sock.user.lid) : 'NO-LID';
-          console.log(`[send] 📤 Sending from ${myJid} to JID: ${sendJid} (resolved: ${isResolved})`);
+          console.log(`[send] 📤 Sending from ${myJid} (LID: ${myLid}) to ${sendJid}`);
+          console.log(`[send]    isConnected=${isConnected}, sock.user=${!!sock.user}`);
 
-          // Send message (with bidirectional fallback: LID ↔ PN)
-          let sentMsg;
-          const rawPnJid = targetArg.includes('@') ? targetArg : normalizeNum(targetArg) + '@s.whatsapp.net';
-          try {
-            sentMsg = await sock.sendMessage(sendJid, { text: sendText });
-            console.log(`[send] ✅ Message successfully sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
-          } catch (sendErr) {
-            console.log(`[send] ⚠️ Send to target JID ${sendJid} failed: ${sendErr.message}. Trying bidirectional fallback to raw phone JID ${rawPnJid}...`);
-            if (sendJid !== rawPnJid) {
-              sendJid = rawPnJid;
-              sentMsg = await sock.sendMessage(rawPnJid, { text: sendText });
-              console.log(`[send] ✅ Bidirectional fallback succeeded! Message sent to ${rawPnJid} (msgId=${sentMsg?.key?.id})`);
-            } else {
-              throw sendErr; // rethrow if it was already the raw JID
-            }
-          }
+          const sentMsg = await sock.sendMessage(sendJid, { text: sendText });
+          console.log(`[send] ✅ Sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
           if (sentMsg?.key?.id) registerPendingDelivery(sentMsg.key.id, sendJid, sendText, sock);
-
-          const successText = buildOmegaTerminal(
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(
             `📤 *SENT*\n\n` +
-            `   🎯 *TARGET*   : ${targetArg}\n` +
-            `   🔑 *JID*      : ${sendJid}\n` +
-            `   📨 *MSG ID*   : ${sentMsg?.key?.id || 'pending'}\n` +
+            `   🎯 *TO*     : ${sendNum}\n` +
+            `   📨 *MSG ID* : ${sentMsg?.key?.id || 'pending'}\n` +
             `   📝 *PREVIEW*:\n` +
             `   ${sendText.slice(0, 200)}${sendText.length > 200 ? '...' : ''}\n\n` +
             `   ⏳ _Waiting for delivery ack_\n` +
-            `   💡 _Sent via robust, fail-safe routing (onWhatsApp fallback)._`
-          );
-
-          if (statusMsg?.key) {
-            await sock.sendMessage(jid, { text: successText, edit: statusMsg.key }, quotedOpts(msg));
-          } else {
-            await sock.sendMessage(jid, { text: successText }, quotedOpts(msg));
-          }
+            `   🔄 _Auto-retry on timeout_\n` +
+            `   💡 _Tip: if contact never received, ask them to message this number first to refresh the session_`
+          ) }, quotedOpts(msg));
         } catch (e) {
-          console.log(`[send] ❌ Send operation failed: ${e.message}`);
-          const errText = buildOmegaTerminal(
+          console.log(`[send] ❌ Failed: ${e.message}`);
+          console.log(`[send]    isConnected=${isConnected}, sock.user=${!!sock.user}, myJid=${sock.user?.id}`);
+          await sock.sendMessage(jid, { text: buildOmegaTerminal(
             `❌ *SEND FAILED*\n\n` +
             `   *Error:* ${e.message}\n\n` +
-            `   *Target:* ${targetArg}\n` +
-            `   *Bot state:* Connected: ${isConnected}\n\n` +
-            `   *Tips:*\n` +
-            `   1. If sending to a phone number, make sure\n` +
-            `      to include country code.\n` +
-            `   2. Check if the target number has WhatsApp.\n` +
-            `   3. Check if the bot has been blocked.`
-          );
-          if (statusMsg?.key) {
-            await sock.sendMessage(jid, { text: errText, edit: statusMsg.key }, quotedOpts(msg));
-          } else {
-            await sock.sendMessage(jid, { text: errText }, quotedOpts(msg));
-          }
+            `   *Bot state:*\n` +
+            `   • Connected: ${isConnected}\n` +
+            `   • My JID: ${sock.user?.id || 'N/A'}\n\n` +
+            `   *Tip:* Check if the destination number\n` +
+            `   has WhatsApp installed.`
+          ) }, quotedOpts(msg));
         }
         return;
       }
@@ -8197,26 +8080,6 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   const { version } = await fetchLatestBaileysVersion();
   const socketMsgStore = createMessageStore();
 
-  // Proxy Configuration: Exposes the ability to bypass datacenter IP restrictions
-  const proxyUrl = process.env.PROXY_URL || process.env.WHATSAPP_PROXY || null;
-  let agentOpts = {};
-  if (proxyUrl) {
-    try {
-      console.log(`[proxy:${sessionKey}] 🌐 Configuring proxy: ${proxyUrl.split('@').pop()} (sensitive credentials masked)`);
-      if (proxyUrl.startsWith('socks')) {
-        const { SocksProxyAgent } = require('socks-proxy-agent');
-        const agent = new SocksProxyAgent(proxyUrl);
-        agentOpts = { agent, fetchAgent: agent };
-      } else if (proxyUrl.startsWith('http')) {
-        const { HttpsProxyAgent } = require('https-proxy-agent');
-        const agent = new HttpsProxyAgent(proxyUrl);
-        agentOpts = { agent, fetchAgent: agent };
-      }
-    } catch (e) {
-      console.error(`[proxy:${sessionKey}] ❌ Failed to load proxy agent:`, e.message);
-    }
-  }
-
   const sock = makeWASocket({
     version,
     browser: ['Mac OS', 'Chrome', '120.0.0'],
@@ -8229,9 +8092,9 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     markOnlineOnConnect: true,
     syncFullHistory: false,
     generateHighQualityLinkPreview: false,
-    // Allow history sync messages so Baileys can populate LID-to-PN mappings and group participant metadata.
-    // Our custom timestamp-based anti-replay guard in handleMessagesUpsert will still safely ignore and drop them.
-    shouldSyncHistoryMessage: () => true,
+    // ANTI-REPLAY: Tell Baileys to reject ALL history sync messages
+    // This prevents offline/pending messages from being delivered on reconnect
+    shouldSyncHistoryMessage: () => false,
     // Ignore newsletter/status broadcast messages
     shouldIgnoreJid: (jid) => {
       return jid === 'status@broadcast' || (jid && jid.endsWith('@newsletter'));
@@ -8251,9 +8114,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     keepAliveIntervalMs: 15_000,
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 120_000,
-    ...agentOpts, // Spread proxy configuration
   });
-  sock.authDir = authDir;
     if (isMultiSession) {
     activeSockets[socketKey] = { sock, isConnected: false, user: null, authDir, connectedAt: null };
     socketKeyMap.set(sock, socketKey);
@@ -8264,48 +8125,6 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   let everConnected = false;
   // ANTI-REPLAY: Don't process ANY messages until Baileys has flushed all offline/pending messages
   let pendingNotificationsFlushed = false;
-  let hasSentSelfConnectMsg = false;
-
-  const triggerSelfConnectMessage = async (label) => {
-    if (hasSentSelfConnectMsg) return;
-    hasSentSelfConnectMsg = true;
-    
-    try {
-      const { jidNormalizedUser } = require('@nexustechpro/baileys');
-      let selfJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : '';
-      if (!selfJid) {
-        console.log(`[self-chat] [${label}] ⚠️ Cannot send connected message: sock.user.id is null`);
-        hasSentSelfConnectMsg = false; // allow retry
-        return;
-      }
-      
-      let body;
-      let tgBody;
-      if (connectOrigin === 'restore') {
-        body = `🌑 *PHANTOM-X RESTORED* · 👁\n\n   Session resurrected from\n   Telegram backup channel.\n\n   " *I do not die. I only*\n     *wait for the next call* ."`;
-        tgBody = `🟢 *PHANTOM-X RESTORED FROM BACKUP!* 🌑\n\nYour WhatsApp session has successfully reconnected via Telegram pinned backup auto-restore.\n\n— *EVENTIDE OMEGA* · 👁`;
-      } else if (connectOrigin === 'pair' || connectOrigin === 'boot') {
-        body = `🌑 *PHANTOM-X IS ONLINE* · 👁\n\n   Type *.help* to explore\n   the codex.\n\n   " *An echo in the void is*\n     *the only proof you exist* ."`;
-        tgBody = `🟢 *PHANTOM-X IS ONLINE!* 🌑\n\nYour WhatsApp is connected and running.\n\n— *EVENTIDE OMEGA* · 👁`;
-      } else {
-        return; // silent reconnect — don't spam self-chat on every minor reconnect
-      }
-      
-      console.log(`[self-chat] [${label}] 📤 Sending connected message to self (${selfJid}) via origin=${connectOrigin}`);
-      await sock.sendMessage(selfJid, { text: buildOmegaTerminal(body) });
-      console.log(`[self-chat] [${label}] ✅ Connected message successfully sent!`);
-
-      // Fallback: Also notify the private Telegram Backup Channel so you ALWAYS see when the bot connects!
-      if (TELEGRAM_BACKUP_CHANNEL && telegramBot && tgBody) {
-        telegramBot.sendMessage(TELEGRAM_BACKUP_CHANNEL, tgBody, { parse_mode: 'Markdown' }).catch((err) => {
-          console.error('[tg-notify] Failed to send connect message to channel:', err.message);
-        });
-      }
-    } catch (e) {
-      console.error(`[self-chat] [${label}] ❌ Failed to send connected message:`, e.message);
-      hasSentSelfConnectMsg = false; // allow retry
-    }
-  };
 
   // Pairing code flow
   if (phoneNumber) {
@@ -8493,9 +8312,6 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
       if (!pendingNotificationsFlushed) {
         pendingNotificationsFlushed = true;
         console.log('[socket] ✅ Pending notifications flushed — bot is now LIVE and processing new messages');
-        
-        // Trigger self-chat connect message now that history sync is 100% complete
-        triggerSelfConnectMessage('sync-complete').catch(() => {});
       }
     }
 
@@ -8665,10 +8481,33 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         }, 10000);
       }
       
-      // Fallback trigger in case receivedPendingNotifications doesn't fire (e.g., rapid reconnects with no backlog)
-      setTimeout(() => {
-        triggerSelfConnectMessage('open-fallback').catch(() => {});
-      }, 15000); // 15s fallback
+      setTimeout(async () => {
+        try {
+          const selfJid = sock.user?.id;
+          if (!selfJid) return;
+          let body;
+          if (connectOrigin === 'restore') {
+            body = `🌑 *PHANTOM-X RESTORED* · 👁
+
+   Session resurrected from
+   Telegram backup channel.
+
+   " *I do not die. I only*
+     *wait for the next call* ."`;
+          } else if (connectOrigin === 'pair' || connectOrigin === 'boot') {
+            body = `🌑 *PHANTOM-X IS ONLINE* · 👁
+
+   Type *.help* to explore
+   the codex.
+
+   " *An echo in the void is*
+     *the only proof you exist* ."`;
+          } else {
+            return; // silent reconnect — don't spam self-chat on every minor reconnect
+          }
+          await sock.sendMessage(selfJid, { text: buildOmegaTerminal(body) });
+        } catch (e) { console.error('[self-chat]', e.message); }
+      }, 2000);
       await backupAuthToChannel();
       if (telegramCtx) {
         if (connectOrigin === 'restore') {
