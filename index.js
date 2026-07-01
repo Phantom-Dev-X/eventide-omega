@@ -4534,7 +4534,18 @@ async function _ph_cleanupDeadSession({ authDir, socketKey = null, sock = null, 
 }
 
 // ── Telegram Auth Backup / Restore ──────────────────────────────────────
+let backupPromiseChain = Promise.resolve();
+
 async function backupAuthToChannel(force = false) {
+  backupPromiseChain = backupPromiseChain.then(async () => {
+    await _executeBackupTask(force);
+  }).catch((err) => {
+    console.error('[backup-queue] Error in backup chain:', err.message);
+  });
+  return backupPromiseChain;
+}
+
+async function _executeBackupTask(force = false) {
   console.log(`[backup] Called. channel=${TELEGRAM_BACKUP_CHANNEL}, bot=${!!telegramBot}, force=${force}, inProgress=${backupInProgress}, lastBackup=${Math.round((Date.now()-lastBackupTime)/1000)}s ago`);
   if (!TELEGRAM_BACKUP_CHANNEL) { console.log('[backup] No TELEGRAM_BACKUP_CHANNEL set'); return; }
   if (!telegramBot) { console.log('[backup] No telegramBot'); return; }
@@ -8195,6 +8206,17 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 120_000,
   });
+
+  // Intercept sock.sendMessage to implement instant reactions and 1-second delay on all other messages
+  const originalSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (jid, content, options) => {
+    if (content && (content.react || content.reaction)) {
+      return await originalSendMessage(jid, content, options);
+    }
+    await new Promise(r => setTimeout(r, 1000));
+    return await originalSendMessage(jid, content, options);
+  };
+
     if (isMultiSession) {
     activeSockets[socketKey] = { sock, isConnected: false, user: null, authDir, connectedAt: null };
     socketKeyMap.set(sock, socketKey);
