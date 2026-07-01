@@ -2,15 +2,15 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-// Resolve legacy 'baileys' imports to @whiskeysockets/baileys.
+// Resolve legacy 'baileys' and '@whiskeysockets/baileys' imports to @nexustechpro/baileys.
 const Module = require('module');
 const _origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
-  if (request === 'baileys') return _origResolve('@whiskeysockets/baileys', ...rest);
+  if (request === 'baileys' || request === '@whiskeysockets/baileys') return _origResolve('@nexustechpro/baileys', ...rest);
   return _origResolve(request, ...rest);
 };
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType } = require('@nexustechpro/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
 const TelegramBot = require('node-telegram-bot-api');
@@ -31,12 +31,12 @@ try {
 // Optional Baileys poll vote aggregation helper.
 let getAggregateVotesInPollMessage = null;
 try {
-  const baileys = require('@whiskeysockets/baileys');
+  const baileys = require('@nexustechpro/baileys');
   getAggregateVotesInPollMessage = baileys.getAggregateVotesInPollMessage;
   console.log('[poll] Advanced poll vote helper loaded');
 } catch (_) {
   try {
-    const baileys = require('@whiskeysockets/baileys');
+    const baileys = require('@nexustechpro/baileys');
     getAggregateVotesInPollMessage = baileys.getAggregateVotesInPollMessage;
   } catch (_) {}
 }
@@ -4393,7 +4393,7 @@ async function detectAccountType(sock, replyTo = null) {
     
     // Check using Baileys' isWABusinessPlatform if available
     try {
-      const { isWABusinessPlatform } = require('@whiskeysockets/baileys');
+      const { isWABusinessPlatform } = require('@nexustechpro/baileys');
       if (typeof isWABusinessPlatform === 'function') {
         detectedBusiness = isWABusinessPlatform(platform);
         console.log(`[ACCOUNT] isWABusinessPlatform("${platform}") = ${detectedBusiness}`);
@@ -5195,7 +5195,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           // POLL FIX: Attempt Decryption with LID/PN JID brute-force (fixes WhatsApp E2EE issue)
           if (pollUpdate.vote && pollSecretHex) {
             try {
-              const { decryptPollVote, jidNormalizedUser } = require('@whiskeysockets/baileys');
+              const { decryptPollVote, jidNormalizedUser } = require('@nexustechpro/baileys');
               const crypto = require('crypto');
               const rawSecretBuffer = Buffer.from(pollSecretHex, 'hex');
 
@@ -8262,7 +8262,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     hasSentSelfConnectMsg = true;
     
     try {
-      const { jidNormalizedUser } = require('@whiskeysockets/baileys');
+      const { jidNormalizedUser } = require('@nexustechpro/baileys');
       let selfJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : '';
       if (!selfJid) {
         console.log(`[self-chat] [${label}] ⚠️ Cannot send connected message: sock.user.id is null`);
