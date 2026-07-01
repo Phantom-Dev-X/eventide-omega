@@ -4208,11 +4208,10 @@ async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null) {
   const subContent = getSubMenuContent(buttonId, persona);
   if (subContent) {
     if (editMsgKey) {
-      await sock.sendMessage(jid, { text: subContent, edit: editMsgKey }, quotedOpts(msg));
+      return await sock.sendMessage(jid, { text: subContent, edit: editMsgKey }, quotedOpts(msg));
     } else {
-      await sock.sendMessage(jid, { text: subContent }, quotedOpts(msg));
+      return await sock.sendMessage(jid, { text: subContent }, quotedOpts(msg));
     }
-    return;
   }
 
 // Fun menu now handled by getSubMenuContent above
@@ -4223,21 +4222,19 @@ async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null) {
       `   Commands are being prepared.\n   You will be notified when ready.`
     );
     if (editMsgKey) {
-      await sock.sendMessage(jid, { text, edit: editMsgKey }, quotedOpts(msg));
+      return await sock.sendMessage(jid, { text, edit: editMsgKey }, quotedOpts(msg));
     } else {
-      await sock.sendMessage(jid, { text }, quotedOpts(msg));
+      return await sock.sendMessage(jid, { text }, quotedOpts(msg));
     }
-    return;
   }
   if (buttonId === 'menu_dev') {
     if (!isDev) {
       const text = buildOmegaTerminal(`   🔒  *ACCESS_DENIED*\n\n   the throne does not open\n   for the uninvited.`);
       if (editMsgKey) {
-        await sock.sendMessage(jid, { text, edit: editMsgKey }, quotedOpts(msg));
+        return await sock.sendMessage(jid, { text, edit: editMsgKey }, quotedOpts(msg));
       } else {
-        await sock.sendMessage(jid, { text }, quotedOpts(msg));
+        return await sock.sendMessage(jid, { text }, quotedOpts(msg));
       }
-      return;
     }
     const text = buildOmegaTerminal(
       `   ╔══ *🔴 ARCHITECT MENU* ══╗\n\n` +
@@ -4245,11 +4242,10 @@ async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null) {
       `   Commands are being prepared.\n   You will be notified when ready.`
     );
     if (editMsgKey) {
-      await sock.sendMessage(jid, { text, edit: editMsgKey }, quotedOpts(msg));
+      return await sock.sendMessage(jid, { text, edit: editMsgKey }, quotedOpts(msg));
     } else {
-      await sock.sendMessage(jid, { text }, quotedOpts(msg));
+      return await sock.sendMessage(jid, { text }, quotedOpts(msg));
     }
-    return;
   }
 }
 
@@ -5284,17 +5280,40 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
           if (mappedId) {
             console.log(`[poll-menu] ✅ Successfully matched vote to ${mappedId} for ${jid}`);
-            // Send loading message based on choice
             const loadingText = getMenuLoadingText(mappedId);
-            let loadingMsg = null;
 
-            if (loadingText) {
-              loadingMsg = await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+            if (!global.lastMenuMessages) global.lastMenuMessages = {};
+
+            if (global.lastMenuMessages[jid]) {
+              const keys = global.lastMenuMessages[jid];
+              try {
+                if (loadingText) {
+                  await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey }, quotedOpts(msg));
+                }
+                await handleMenuButton(sock, jid, msg, mappedId, keys.contentKey);
+              } catch (_) {
+                // Fallback: If messages were deleted or are un-editable, send fresh ones
+                delete global.lastMenuMessages[jid];
+                await sendFreshMenu();
+              }
+            } else {
+              await sendFreshMenu();
             }
 
-            if (global.menuStateMap) delete global.menuStateMap[jid];
-            await handleMenuButton(sock, jid, msg, mappedId, loadingMsg?.key);
-            // lastMenuPoll removed
+            async function sendFreshMenu() {
+              let loadingMsg = null;
+              if (loadingText) {
+                loadingMsg = await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+              }
+              if (global.menuStateMap) delete global.menuStateMap[jid];
+              const contentMsg = await handleMenuButton(sock, jid, msg, mappedId);
+              if (loadingMsg && contentMsg) {
+                global.lastMenuMessages[jid] = {
+                  loadingKey: loadingMsg.key,
+                  contentKey: contentMsg.key
+                };
+              }
+            }
             return;
           } else {
             console.log(`[poll-menu] ⚠️ Could not decrypt or match poll vote for ${jid}`);
@@ -5331,15 +5350,38 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
         if (mappedId) {
           const loadingText = getMenuLoadingText(mappedId);
-          let loadingMsg = null;
 
-          if (loadingText) {
-            loadingMsg = await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+          if (!global.lastMenuMessages) global.lastMenuMessages = {};
+
+          if (global.lastMenuMessages[jid]) {
+            const keys = global.lastMenuMessages[jid];
+            try {
+              if (loadingText) {
+                await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey }, quotedOpts(msg));
+              }
+              await handleMenuButton(sock, jid, msg, mappedId, keys.contentKey);
+            } catch (_) {
+              delete global.lastMenuMessages[jid];
+              await sendFreshMenu();
+            }
+          } else {
+            await sendFreshMenu();
           }
 
-          if (global.menuStateMap) delete global.menuStateMap[jid];
-          await handleMenuButton(sock, jid, msg, mappedId, loadingMsg?.key);
-          
+          async function sendFreshMenu() {
+            let loadingMsg = null;
+            if (loadingText) {
+              loadingMsg = await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+            }
+            if (global.menuStateMap) delete global.menuStateMap[jid];
+            const contentMsg = await handleMenuButton(sock, jid, msg, mappedId);
+            if (loadingMsg && contentMsg) {
+              global.lastMenuMessages[jid] = {
+                loadingKey: loadingMsg.key,
+                contentKey: contentMsg.key
+              };
+            }
+          }
           return;
         }
       }
@@ -7279,12 +7321,13 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         else if (pipe > 0) { artist = query.slice(pipe + 3).trim(); title = query.slice(0, pipe).trim(); }
         else if (byIdx > 0){ artist = query.slice(byIdx + 4).trim(); title = query.slice(0, byIdx).trim(); }
 
+        let statusMsg = null;
         try {
           let lyrics = '';
           let actualArtist = artist;
           let actualTitle = title;
 
-          await sock.sendMessage(jid, {
+          statusMsg = await sock.sendMessage(jid, {
             text: _ph_personaHeader(persona, '🔍 SEARCHING LYRICS',
               `┃  🎵 *QUERY*  : "${query}"\n┃  ⏳ *STATUS* : Searching lyrics sites...`)
           }, quotedOpts(msg));
@@ -7316,7 +7359,8 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
                 `┃  🎵 *SONG*   : ${actualTitle || title}\n` +
                 `┃  👤 *ARTIST* : ${actualArtist || 'Unknown'}\n\n` +
                 `┃  💡 *TIP*     : Try adding artist name:\n` +
-                `┃    .lyrics <title> - <artist>`)
+                `┃    .lyrics <title> - <artist>`),
+              edit: statusMsg.key
             }, quotedOpts(msg));
             return;
           }
@@ -7328,15 +7372,18 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           );
           const lyricChunks = _ph_chunkText(lyrics, 3500);
 
-          await sock.sendMessage(jid, { text: header + lyricChunks[0] }, quotedOpts(msg));
+          await sock.sendMessage(jid, { text: header + lyricChunks[0], edit: statusMsg.key }, quotedOpts(msg));
           for (let i = 1; i < lyricChunks.length; i++) {
             await sock.sendMessage(jid, { text: lyricChunks[i] }, quotedOpts(msg));
           }
         } catch (e) {
           console.error('[lyrics] Error:', e);
-          await sock.sendMessage(jid, {
-            text: buildOmegaTerminal(`❌ Lyrics failed\n\n${e.message}`)
-          }, quotedOpts(msg));
+          const errText = buildOmegaTerminal(`❌ Lyrics failed\n\n${e.message}`);
+          if (statusMsg?.key) {
+            await sock.sendMessage(jid, { text: errText, edit: statusMsg.key }, quotedOpts(msg));
+          } else {
+            await sock.sendMessage(jid, { text: errText }, quotedOpts(msg));
+          }
         }
         return;
       }
@@ -8248,14 +8295,38 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
                   console.log(`[poll-menu-update] ✅ getAggregateVotes matched: "${voted.name}" → ${mappedId}`);
 
                   const loadingText = getMenuLoadingText(mappedId);
-                  let loadingMsg = null;
 
-                  if (loadingText) {
-                    loadingMsg = await sock.sendMessage(jid, { text: loadingText });
+                  if (!global.lastMenuMessages) global.lastMenuMessages = {};
+
+                  if (global.lastMenuMessages[jid]) {
+                    const keys = global.lastMenuMessages[jid];
+                    try {
+                      if (loadingText) {
+                        await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey });
+                      }
+                      await handleMenuButton(sock, jid, null, mappedId, keys.contentKey);
+                    } catch (_) {
+                      delete global.lastMenuMessages[jid];
+                      await sendFreshMenu();
+                    }
+                  } else {
+                    await sendFreshMenu();
                   }
 
-                  if (global.menuStateMap) delete global.menuStateMap[jid];
-                  await handleMenuButton(sock, jid, null, mappedId, loadingMsg?.key);
+                  async function sendFreshMenu() {
+                    let loadingMsg = null;
+                    if (loadingText) {
+                      loadingMsg = await sock.sendMessage(jid, { text: loadingText });
+                    }
+                    if (global.menuStateMap) delete global.menuStateMap[jid];
+                    const contentMsg = await handleMenuButton(sock, jid, null, mappedId);
+                    if (loadingMsg && contentMsg) {
+                      global.lastMenuMessages[jid] = {
+                        loadingKey: loadingMsg.key,
+                        contentKey: contentMsg.key
+                      };
+                    }
+                  }
                   return;
                 }
               }
@@ -8278,14 +8349,38 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
                 console.log(`[poll-menu-update] ✅ Hash matched option ${i}: ${mappedId}`);
 
                 const loadingText = getMenuLoadingText(mappedId);
-                let loadingMsg = null;
 
-                if (loadingText) {
-                  loadingMsg = await sock.sendMessage(jid, { text: loadingText });
+                if (!global.lastMenuMessages) global.lastMenuMessages = {};
+
+                if (global.lastMenuMessages[jid]) {
+                  const keys = global.lastMenuMessages[jid];
+                  try {
+                    if (loadingText) {
+                      await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey });
+                    }
+                    await handleMenuButton(sock, jid, null, mappedId, keys.contentKey);
+                  } catch (_) {
+                    delete global.lastMenuMessages[jid];
+                    await sendFreshMenu();
+                  }
+                } else {
+                  await sendFreshMenu();
                 }
 
-                if (global.menuStateMap) delete global.menuStateMap[jid];
-                await handleMenuButton(sock, jid, null, mappedId, loadingMsg?.key);
+                async function sendFreshMenu() {
+                  let loadingMsg = null;
+                  if (loadingText) {
+                    loadingMsg = await sock.sendMessage(jid, { text: loadingText });
+                  }
+                  if (global.menuStateMap) delete global.menuStateMap[jid];
+                  const contentMsg = await handleMenuButton(sock, jid, null, mappedId);
+                  if (loadingMsg && contentMsg) {
+                    global.lastMenuMessages[jid] = {
+                      loadingKey: loadingMsg.key,
+                      contentKey: contentMsg.key
+                    };
+                  }
+                }
                 return;
               }
             }
@@ -9121,10 +9216,34 @@ app.post('/api/pair', async (req, res) => {
                   if (optIndex >= 0 && pollIds[optIndex]) {
                     const mappedId = pollIds[optIndex];
                     const loadingText = getMenuLoadingText(mappedId);
-                    let loadingMsg = null;
-                    if (loadingText) loadingMsg = await sock.sendMessage(jid, { text: loadingText });
-                    if (global.menuStateMap) delete global.menuStateMap[jid];
-                    await handleMenuButton(sock, jid, null, mappedId, loadingMsg?.key);
+
+                    if (!global.lastMenuMessages) global.lastMenuMessages = {};
+
+                    if (global.lastMenuMessages[jid]) {
+                      const keys = global.lastMenuMessages[jid];
+                      try {
+                        if (loadingText) await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey });
+                        await handleMenuButton(sock, jid, null, mappedId, keys.contentKey);
+                      } catch (_) {
+                        delete global.lastMenuMessages[jid];
+                        await sendFreshMenu();
+                      }
+                    } else {
+                      await sendFreshMenu();
+                    }
+
+                    async function sendFreshMenu() {
+                      let loadingMsg = null;
+                      if (loadingText) loadingMsg = await sock.sendMessage(jid, { text: loadingText });
+                      if (global.menuStateMap) delete global.menuStateMap[jid];
+                      const contentMsg = await handleMenuButton(sock, jid, null, mappedId);
+                      if (loadingMsg && contentMsg) {
+                        global.lastMenuMessages[jid] = {
+                          loadingKey: loadingMsg.key,
+                          contentKey: contentMsg.key
+                        };
+                      }
+                    }
                     return;
                   }
                 }
@@ -9142,10 +9261,34 @@ app.post('/api/pair', async (req, res) => {
                 if (selectedHash === optHash) {
                   const mappedId = pollIds[i] || '';
                   const loadingText = getMenuLoadingText(mappedId);
-                  let loadingMsg = null;
-                  if (loadingText) loadingMsg = await sock.sendMessage(jid, { text: loadingText });
-                  if (global.menuStateMap) delete global.menuStateMap[jid];
-                  await handleMenuButton(sock, jid, null, mappedId, loadingMsg?.key);
+
+                  if (!global.lastMenuMessages) global.lastMenuMessages = {};
+
+                  if (global.lastMenuMessages[jid]) {
+                    const keys = global.lastMenuMessages[jid];
+                    try {
+                      if (loadingText) await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey });
+                      await handleMenuButton(sock, jid, null, mappedId, keys.contentKey);
+                    } catch (_) {
+                      delete global.lastMenuMessages[jid];
+                      await sendFreshMenu();
+                    }
+                  } else {
+                    await sendFreshMenu();
+                  }
+
+                  async function sendFreshMenu() {
+                    let loadingMsg = null;
+                    if (loadingText) loadingMsg = await sock.sendMessage(jid, { text: loadingText });
+                    if (global.menuStateMap) delete global.menuStateMap[jid];
+                    const contentMsg = await handleMenuButton(sock, jid, null, mappedId);
+                    if (loadingMsg && contentMsg) {
+                      global.lastMenuMessages[jid] = {
+                        loadingKey: loadingMsg.key,
+                        contentKey: contentMsg.key
+                      };
+                    }
+                  }
                   return;
                 }
               }
