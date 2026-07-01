@@ -2045,10 +2045,10 @@ function eclipseFooter() { return ECLIPSE_BORDER; }
 
 function buildOmegaTerminal(body) {
   return (
-    "╔════════╦════════╗\n" +
+    "╔═════════╦══════════╗\n" +
     "        ⚠ EVENTIDE OMEGA\n" +
     "               TERMINAL ACCESS                                                                         \n" +
-    "╚════════╩════════╝\n\n" +
+    "╚═════════╩══════════╝\n\n" +
     body + "\n\n" +
     "— *EVENTIDE OMEGA* · 👁"
   );
