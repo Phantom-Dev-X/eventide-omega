@@ -4252,6 +4252,24 @@ async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null) {
 // ── Helpers ─────────────────────────────────────────────────────────────
 function normalizeNum(input) { return String(input || '').replace(/[^\d]/g, ''); }
 
+// Sequential menu action execution queue per chat (prevents race conditions, overlapping edits, and crashes)
+if (!global.menuQueueMap) global.menuQueueMap = new Map();
+
+function queueMenuAction(jid, actionFn) {
+  if (!global.menuQueueMap.has(jid)) {
+    global.menuQueueMap.set(jid, Promise.resolve());
+  }
+  const currentChain = global.menuQueueMap.get(jid);
+  const nextChain = currentChain.then(async () => {
+    try {
+      await actionFn();
+    } catch (err) {
+      console.error('[menu-queue] Error executing queued action:', err.message);
+    }
+  });
+  global.menuQueueMap.set(jid, nextChain);
+}
+
 // Generate a fresh, random, unambiguous 8-char pairing code.
 // We always pass an explicit random code so pairing stays deterministic and
 // never depends on any library default/fallback value.
@@ -5293,38 +5311,46 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
             console.log(`[poll-menu] ✅ Successfully matched vote to ${mappedId} for ${jid}`);
             const loadingText = getMenuLoadingText(mappedId);
 
+            // Extract unique voter number to completely isolate user menu states across multi-sessions & groups
+            const voterJid = msg.key.participant || msg.key.remoteJid || '';
+            const voterNum = normalizeNum(voterJid.split('@')[0].split(':')[0]);
+            const sessionKey = `${ownerNum}_${jid}_${voterNum}`;
+
             if (!global.lastMenuMessages) global.lastMenuMessages = {};
 
-            if (global.lastMenuMessages[jid]) {
-              const keys = global.lastMenuMessages[jid];
-              try {
-                if (loadingText) {
-                  await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey }, quotedOpts(msg));
+            // Queue the entire menu execution sequentially per chat to prevent concurrent spam crashes
+            queueMenuAction(jid, async () => {
+              if (global.lastMenuMessages[sessionKey]) {
+                const keys = global.lastMenuMessages[sessionKey];
+                try {
+                  if (loadingText) {
+                    await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey }, quotedOpts(msg));
+                  }
+                  await handleMenuButton(sock, jid, msg, mappedId, keys.contentKey);
+                } catch (_) {
+                  // Fallback: If messages were deleted or are un-editable, send fresh ones
+                  delete global.lastMenuMessages[sessionKey];
+                  await sendFreshMenu();
                 }
-                await handleMenuButton(sock, jid, msg, mappedId, keys.contentKey);
-              } catch (_) {
-                // Fallback: If messages were deleted or are un-editable, send fresh ones
-                delete global.lastMenuMessages[jid];
+              } else {
                 await sendFreshMenu();
               }
-            } else {
-              await sendFreshMenu();
-            }
 
-            async function sendFreshMenu() {
-              let loadingMsg = null;
-              if (loadingText) {
-                loadingMsg = await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+              async function sendFreshMenu() {
+                let loadingMsg = null;
+                if (loadingText) {
+                  loadingMsg = await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+                }
+                if (global.menuStateMap) delete global.menuStateMap[jid];
+                const contentMsg = await handleMenuButton(sock, jid, msg, mappedId);
+                if (loadingMsg && contentMsg) {
+                  global.lastMenuMessages[sessionKey] = {
+                    loadingKey: loadingMsg.key,
+                    contentKey: contentMsg.key
+                  };
+                }
               }
-              if (global.menuStateMap) delete global.menuStateMap[jid];
-              const contentMsg = await handleMenuButton(sock, jid, msg, mappedId);
-              if (loadingMsg && contentMsg) {
-                global.lastMenuMessages[jid] = {
-                  loadingKey: loadingMsg.key,
-                  contentKey: contentMsg.key
-                };
-              }
-            }
+            });
             return;
           } else {
             console.log(`[poll-menu] ⚠️ Could not decrypt or match poll vote for ${jid}`);
@@ -5362,37 +5388,43 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         if (mappedId) {
           const loadingText = getMenuLoadingText(mappedId);
 
+          const voterJid = msg.key.participant || msg.key.remoteJid || '';
+          const voterNum = normalizeNum(voterJid.split('@')[0].split(':')[0]);
+          const sessionKey = `${ownerNum}_${jid}_${voterNum}`;
+
           if (!global.lastMenuMessages) global.lastMenuMessages = {};
 
-          if (global.lastMenuMessages[jid]) {
-            const keys = global.lastMenuMessages[jid];
-            try {
-              if (loadingText) {
-                await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey }, quotedOpts(msg));
+          queueMenuAction(jid, async () => {
+            if (global.lastMenuMessages[sessionKey]) {
+              const keys = global.lastMenuMessages[sessionKey];
+              try {
+                if (loadingText) {
+                  await sock.sendMessage(jid, { text: loadingText, edit: keys.loadingKey }, quotedOpts(msg));
+                }
+                await handleMenuButton(sock, jid, msg, mappedId, keys.contentKey);
+              } catch (_) {
+                delete global.lastMenuMessages[sessionKey];
+                await sendFreshMenu();
               }
-              await handleMenuButton(sock, jid, msg, mappedId, keys.contentKey);
-            } catch (_) {
-              delete global.lastMenuMessages[jid];
+            } else {
               await sendFreshMenu();
             }
-          } else {
-            await sendFreshMenu();
-          }
 
-          async function sendFreshMenu() {
-            let loadingMsg = null;
-            if (loadingText) {
-              loadingMsg = await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+            async function sendFreshMenu() {
+              let loadingMsg = null;
+              if (loadingText) {
+                loadingMsg = await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+              }
+              if (global.menuStateMap) delete global.menuStateMap[jid];
+              const contentMsg = await handleMenuButton(sock, jid, msg, mappedId);
+              if (loadingMsg && contentMsg) {
+                global.lastMenuMessages[sessionKey] = {
+                  loadingKey: loadingMsg.key,
+                  contentKey: contentMsg.key
+                };
+              }
             }
-            if (global.menuStateMap) delete global.menuStateMap[jid];
-            const contentMsg = await handleMenuButton(sock, jid, msg, mappedId);
-            if (loadingMsg && contentMsg) {
-              global.lastMenuMessages[jid] = {
-                loadingKey: loadingMsg.key,
-                contentKey: contentMsg.key
-              };
-            }
-          }
+          });
           return;
         }
       }
