@@ -5107,13 +5107,13 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
           let mappedId = '';
 
-          // 1. Get cached poll info (either from pollCreationCache or lastMenuPoll)
-          let cached = pollCreationCache[pollCreationKey.id];
-          // pollCreationCache only (multi-user safe)
+          // 1. Get cached poll info (either from pollCreationCache, or multi-user getUserPoll via pollOwnerMap)
+          const ownerPhone = pollOwnerMap.get(pollCreationKey.id);
+          let cached = ownerPhone ? getUserPoll(ownerPhone, pollCreationKey.id) : pollCreationCache[pollCreationKey.id];
 
           // If this isn't one of our menu polls, skip
           if (!cached) {
-            console.log(`[poll-vote] ⚠️ Poll ${pollCreationKey.id} not in cache, ignoring`);
+            console.log(`[poll-vote] ⚠️ Poll ${pollCreationKey.id} not in cache (ownerPhone=${ownerPhone || 'N/A'}), ignoring`);
             return;
           }
           console.log(`[poll-vote] ✅ Found poll in cache — options=${cached.options?.length}, hasSecret=${!!cached.secretHex}`);
