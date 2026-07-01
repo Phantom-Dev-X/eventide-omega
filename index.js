@@ -2045,7 +2045,7 @@ function eclipseFooter() { return ECLIPSE_BORDER; }
 
 function buildOmegaTerminal(body) {
   return (
-    "╔════════╦═══════════╗\n" +
+    "╔═════════╦══════════╗\n" +
     "        ⚠ EVENTIDE OMEGA\n" +
     "               TERMINAL ACCESS                                                                         \n" +
     "╚═════════╩══════════╝\n\n" +
@@ -2075,8 +2075,8 @@ function buildEclipseVoid() {
          "════════════════════════════════════";
 }
 function buildEclipseMain(isDev) {
-  return "╔══════════╦══════════════╗\n" +
-         "║       ⚠ EVENTIDE OMEGA\n" +
+  return "╔═════════╦══════════╗\n" +
+         "        ⚠ EVENTIDE OMEGA\n" +
          "               TERMINAL ACCESS                                                                         \n" +
          "╚═════════╩══════════╝\n\n" +
          "                ═══ E C L I P S E ═══\n" +
