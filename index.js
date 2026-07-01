@@ -8209,6 +8209,26 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   const { version } = await fetchLatestBaileysVersion();
   const socketMsgStore = createMessageStore();
 
+  // Proxy Configuration: Exposes the ability to bypass datacenter IP restrictions
+  const proxyUrl = process.env.PROXY_URL || process.env.WHATSAPP_PROXY || null;
+  let agentOpts = {};
+  if (proxyUrl) {
+    try {
+      console.log(`[proxy:${sessionKey}] 🌐 Configuring proxy: ${proxyUrl.split('@').pop()} (sensitive credentials masked)`);
+      if (proxyUrl.startsWith('socks')) {
+        const { SocksProxyAgent } = require('socks-proxy-agent');
+        const agent = new SocksProxyAgent(proxyUrl);
+        agentOpts = { agent, fetchAgent: agent };
+      } else if (proxyUrl.startsWith('http')) {
+        const { HttpsProxyAgent } = require('https-proxy-agent');
+        const agent = new HttpsProxyAgent(proxyUrl);
+        agentOpts = { agent, fetchAgent: agent };
+      }
+    } catch (e) {
+      console.error(`[proxy:${sessionKey}] ❌ Failed to load proxy agent:`, e.message);
+    }
+  }
+
   const sock = makeWASocket({
     version,
     browser: ['Mac OS', 'Chrome', '120.0.0'],
@@ -8243,6 +8263,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     keepAliveIntervalMs: 15_000,
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 120_000,
+    ...agentOpts, // Spread proxy configuration
   });
   sock.authDir = authDir;
     if (isMultiSession) {
