@@ -2233,16 +2233,25 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
       const bannerBuf = fs.readFileSync(MENU_BANNER_FILE);
       await sock.sendMessage(jid, { text: scenes.mid, edit: sent.key });
       await new Promise(r => setTimeout(r, 1000));
+      
+      // 1. Send the banner image with a clean, short caption to prevent menu scattering
       await sock.sendMessage(jid, {
         image: bannerBuf,
-        caption: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_'
+        caption: '     — *E V E N T I D E · O M E G A* —'
+      });
+      
+      // 2. Send the actual terminal menu as a separate regular text message immediately after.
+      // Since it is a regular text message, WhatsApp will render it in standard monospaced full-width,
+      // guaranteeing that the gorgeous borders align perfectly and never scatter!
+      await sock.sendMessage(jid, {
+        text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by ─── 亗 ᴘᴅᴠ ᴛᴇᴄʜɴᴏʟᴏɢɪᴇꜱ 亗 ───_'
       });
     } catch (e) {
       console.log('[menu] Banner send failed, falling back to text:', e.message);
-      await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_', edit: sent.key });
+      await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by ─── 亗 ᴘᴅᴠ ᴛᴇᴄʜɴᴏʟᴏɢɪᴇꜱ 亗 ───_', edit: sent.key });
     }
   } else {
-    await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_', edit: sent.key });
+    await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by ─── 亗 ᴘᴅᴠ ᴛᴇᴄʜɴᴏʟᴏɢɪᴇꜱ 亗 ───_', edit: sent.key });
   }
 
   // Stage 4 ─ Send MENU based on account type (Business = Poll, Normal = Buttons)
