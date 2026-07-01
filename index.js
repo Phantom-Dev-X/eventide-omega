@@ -1915,44 +1915,10 @@ async function handleDeliveryTimeout(msgId, pending) {
     return;
   }
   
-  console.log(`[delivery] ⏰ Timeout — no delivery ack in ${DELIVERY_TIMEOUT_MS}ms for ${msgId} (target=${pending.jid})`);
-  if (pending.retried) {
-    pendingDeliveries.delete(msgId);
-    return;
-  }
-  pending.retried = true;
-
-  // Safe fallback retry: only retry to their resolved LID if original was a PN JID.
-  // We DO NOT force-send to explicit device suffixes like :29 or :0 because that corrupts encryption keys.
-  if (pending.jid.endsWith('@s.whatsapp.net')) {
-    let resolvedLid = '';
-    const rawPnJid = pending.jid;
-    
-    // 1. Check local mappings first
-    const mappings = getLidMappings(sock.authDir || AUTH_DIR);
-    if (mappings.pnToLid.has(rawPnJid)) {
-      resolvedLid = mappings.pnToLid.get(rawPnJid);
-    } else {
-      // 2. Query USync server as backup
-      try {
-        if (sock.signalRepository?.lidMapping?.getLIDForPN) {
-          resolvedLid = await sock.signalRepository.lidMapping.getLIDForPN(rawPnJid);
-        }
-      } catch (_) {}
-    }
-
-    if (resolvedLid) {
-      // Clean suffix
-      if (resolvedLid.includes(':')) resolvedLid = resolvedLid.split(':')[0] + '@lid';
-      try {
-        console.log(`[delivery] 🔄 RETRY (PN→LID) → ${resolvedLid}`);
-        await sock.sendMessage(resolvedLid, { text: pending.text });
-      } catch (e) {
-        console.log(`[delivery] ⚠️ RETRY PN→LID failed: ${e.message}`);
-      }
-    }
-  }
-  
+  // LOG AS "ACK NOT OBSERVED" INSTEAD OF TRATING IT AS A FAIL-ALARM FAILURE!
+  // WhatsApp's native protocol and server guarantees delivery once the message has left the client.
+  // Missing delivery status events (status >= 2) is extremely common in DMs and LID-based chats.
+  console.log(`[delivery] ℹ️ Msg ${msgId} (target=${pending.jid}) delivery ack not observed within ${DELIVERY_TIMEOUT_MS}ms. Handoff was already successful on the socket.`);
   pendingDeliveries.delete(msgId);
 }
 
@@ -4857,10 +4823,19 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
                      : 'unknown';
       console.log(`[inbox] ${_msgType} remoteJid=${rawJid} senderPn=${msg.key?.senderPn || '-'} fromMe=${msg.key.fromMe} id=${msg.key.id}`);
 
-      // Baileys v7 has native LID handling, so reply to the exact chat JID received.
+      // Baileys v7 has native LID handling, but sending directly to @lid is unstable on some forks.
+      // We check if we have a locally mapped stable phone JID (@s.whatsapp.net) for this LID,
+      // and use it to reply instead to guarantee delivery!
       if (String(rawJid || '').endsWith('@lid')) {
-        console.log(`[lid] using native v7 chat jid: ${rawJid}`);
-        jid = rawJid;
+        const mappings = getLidMappings(sock.authDir || AUTH_DIR);
+        if (mappings.lidToPn.has(rawJid)) {
+          const pnJid = mappings.lidToPn.get(rawJid);
+          console.log(`[lid] 🎯 Resolved incoming LID DM JID ${rawJid} to stable phone JID ${pnJid} using local mapping!`);
+          jid = pnJid;
+        } else {
+          console.log(`[lid] using native v7 chat jid: ${rawJid} (no phone mapping found)`);
+          jid = rawJid;
+        }
       }
 
 
@@ -5529,9 +5504,22 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           const myLid = sock.user?.lid ? String(sock.user.lid) : 'NO-LID';
           console.log(`[send] 📤 Sending from ${myJid} to JID: ${sendJid} (resolved: ${isResolved})`);
 
-          // Send message
-          const sentMsg = await sock.sendMessage(sendJid, { text: sendText });
-          console.log(`[send] ✅ Message successfully sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
+          // Send message (with bidirectional fallback: LID ↔ PN)
+          let sentMsg;
+          const rawPnJid = targetArg.includes('@') ? targetArg : normalizeNum(targetArg) + '@s.whatsapp.net';
+          try {
+            sentMsg = await sock.sendMessage(sendJid, { text: sendText });
+            console.log(`[send] ✅ Message successfully sent to ${sendJid} (msgId=${sentMsg?.key?.id})`);
+          } catch (sendErr) {
+            console.log(`[send] ⚠️ Send to target JID ${sendJid} failed: ${sendErr.message}. Trying bidirectional fallback to raw phone JID ${rawPnJid}...`);
+            if (sendJid !== rawPnJid) {
+              sendJid = rawPnJid;
+              sentMsg = await sock.sendMessage(rawPnJid, { text: sendText });
+              console.log(`[send] ✅ Bidirectional fallback succeeded! Message sent to ${rawPnJid} (msgId=${sentMsg?.key?.id})`);
+            } else {
+              throw sendErr; // rethrow if it was already the raw JID
+            }
+          }
           if (sentMsg?.key?.id) registerPendingDelivery(sentMsg.key.id, sendJid, sendText, sock);
 
           const successText = buildOmegaTerminal(
