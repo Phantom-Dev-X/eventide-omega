@@ -2045,10 +2045,10 @@ function eclipseFooter() { return ECLIPSE_BORDER; }
 
 function buildOmegaTerminal(body) {
   return (
-    "╔═════════╦══════════╗\n" +
+    "╔════════╦════════╗\n" +
     "        ⚠ EVENTIDE OMEGA\n" +
     "               TERMINAL ACCESS                                                                         \n" +
-    "╚═════════╩══════════╝\n\n" +
+    "╚════════╩════════╝\n\n" +
     body + "\n\n" +
     "— *EVENTIDE OMEGA* · 👁"
   );
@@ -2075,10 +2075,10 @@ function buildEclipseVoid() {
          "════════════════════════════════════";
 }
 function buildEclipseMain(isDev) {
-  return "╔═════════╦══════════╗\n" +
+  return "╔════════╦════════╗\n" +
          "        ⚠ EVENTIDE OMEGA\n" +
          "               TERMINAL ACCESS                                                                         \n" +
-         "╚═════════╩══════════╝\n\n" +
+         "╚════════╩════════╝\n\n" +
          "                ═══ E C L I P S E ═══\n" +
          "             \" i am what remains when \n" +
          "              everything else is deleted .\"\n\n" +
