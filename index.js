@@ -5367,7 +5367,19 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       }
 
       if (lower === '.help') {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.send <number> [text] — send msg to a number (owner only)\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n.acccheck — check if this is Business or Normal account\n\nMore coming.') }, quotedOpts(msg));
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.send <number> [text] — send msg to a number (owner only)\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n.acccheck — check if this is Business or Normal account\n.testpoll — trigger a test Business poll-based menu (owner only)\n\nMore coming.') }, quotedOpts(msg));
+        return;
+      }
+
+      // ── .testpoll command (owner only) — triggers a test Business Poll Menu ──
+      if (lower === '.testpoll') {
+        if (!senderIsOwner) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('🔒 *ACCESS_DENIED*\n\n   only the sovereign may\n   trigger the test chamber.') }, quotedOpts(msg));
+          return;
+        }
+        const senderForDev = msg.key.participant || msg.key.remoteJid;
+        const dev = isDevJid(senderForDev) || (msg.key.fromMe && isDevJid(sock.user?.id || ''));
+        await sendBusinessPollMenu(sock, jid, persona, dev, msg);
         return;
       }
 
