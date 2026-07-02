@@ -1323,40 +1323,58 @@ async function _ph_tryYtdlCore(url, isAudio) {
 
 // Download buffer from a media URL (with size cap)
 async function _ph_downloadBuffer(mediaUrl) {
-  try {
-    const u = new URL(mediaUrl);
-    const chunks = [];
-    let total = 0;
-    return await new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname: u.hostname,
-        path: u.pathname + u.search,
-        method: 'GET',
-        headers: { 'User-Agent': BROWSER_UA },
-        timeout: 90000
-      }, (res) => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          return resolve(_ph_downloadBuffer(res.headers.location));
-        }
-        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
-        res.on('data', c => {
-          total += c.length;
-          if (total > MAX_DOWNLOAD_BYTES) {
-            req.destroy();
-            return reject(new Error('File too large (>80MB cap)'));
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1500;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const u = new URL(mediaUrl);
+      const chunks = [];
+      let total = 0;
+      const result = await new Promise((resolve, reject) => {
+        const req = https.request({
+          hostname: u.hostname,
+          path: u.pathname + u.search,
+          method: 'GET',
+          headers: { 
+            'User-Agent': BROWSER_UA,
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache'
+          },
+          timeout: 120000 // Increased to 2 mins
+        }, (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            // We handle redirects by calling the function recursively
+            // Note: the recursive call will have its own retry loop, which is fine
+            return resolve(_ph_downloadBuffer(res.headers.location));
           }
-          chunks.push(c);
+          if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+          res.on('data', c => {
+            total += c.length;
+            if (total > MAX_DOWNLOAD_BYTES) {
+              req.destroy();
+              return reject(new Error('File too large (>80MB cap)'));
+            }
+            chunks.push(c);
+          });
+          res.on('end', () => resolve(Buffer.concat(chunks)));
         });
-        res.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+        req.setTimeout(120000, () => req.destroy(new Error('Timeout')));
+        req.end();
       });
-      req.on('error', reject);
-      req.setTimeout(90000, () => req.destroy(new Error('Timeout')));
-      req.end();
-    });
-  } catch (e) {
-    console.log(`[dl] ⚠️ buffer fetch failed: ${e.message}`);
-    return null;
+      return result;
+    } catch (e) {
+      console.log(`[dl] Attempt ${attempt}/${MAX_RETRIES} failed for ${mediaUrl}: ${e.message}`);
+      if (attempt === MAX_RETRIES) {
+        console.log(`[dl] ❌ All ${MAX_RETRIES} attempts failed for ${mediaUrl}`);
+        return null;
+      }
+      await new Promise(r => setTimeout(r, RETRY_DELAY_MS * attempt));
+    }
   }
+  return null;
 }
 
 // Download a small preview image for WhatsApp cards (keeps audio preview from going blank)
