@@ -2226,21 +2226,20 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
   await new Promise(r => setTimeout(r, 4000));
 
   // Stage 3 ─ FINAL (terminal scene + optional banner image)
-  const MENU_BANNER_FILE = 'menu_banner.jpg';
-  if (fs.existsSync(MENU_BANNER_FILE)) {
-    try {
-      const bannerBuf = fs.readFileSync(MENU_BANNER_FILE);
+  try {
+    const bannerBuf = await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png');
+    if (bannerBuf) {
       await sock.sendMessage(jid, { text: scenes.mid, edit: sent.key });
       await new Promise(r => setTimeout(r, 1000));
       await sock.sendMessage(jid, {
         image: bannerBuf,
         caption: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_'
       });
-    } catch (e) {
-      console.log('[menu] Banner send failed, falling back to text:', e.message);
-      await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_', edit: sent.key });
+    } else {
+      throw new Error('Banner download failed');
     }
-  } else {
+  } catch (e) {
+    console.log('[menu] Banner send failed, falling back to text:', e.message);
     await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_', edit: sent.key });
   }
 
