@@ -2245,7 +2245,15 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
 
   // Stage 3 ─ FINAL (terminal scene + optional banner image)
   try {
-    const bannerBuf = await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png');
+    const bannerPath = path.join(__dirname, 'public', 'eventide_banner.png');
+    let bannerBuf = null;
+    if (fs.existsSync(bannerPath)) {
+      bannerBuf = fs.readFileSync(bannerPath);
+    } else {
+      // Fallback if local file is missing (try to download one last time as emergency)
+      bannerBuf = await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png');
+    }
+
     if (bannerBuf) {
       await sock.sendMessage(jid, { text: scenes.mid, edit: sent.key });
       await new Promise(r => setTimeout(r, 1000));
@@ -2254,7 +2262,7 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
         caption: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_'
       });
     } else {
-      throw new Error('Banner download failed');
+      throw new Error('No banner found locally or online');
     }
   } catch (e) {
     console.log('[menu] Banner send failed, falling back to text:', e.message);
