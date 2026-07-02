@@ -8218,7 +8218,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     shouldSyncHistoryMessage: () => false,
     // Ignore newsletter/status broadcast messages
     shouldIgnoreJid: (jid) => {
-      return jid === 'status@broadcast' || (jid && jid.endsWith('@newsletter'));
+      return jid === 'status@broadcast';
     },
     emitOwnEvents: true,
     fireInitQueries: true,
