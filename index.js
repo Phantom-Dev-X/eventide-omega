@@ -2245,43 +2245,24 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
 
   // Stage 3 ─ FINAL (terminal scene + optional banner image)
   try {
-    const possiblePaths = [
-      path.join(__dirname, 'public', 'eventide_banner.png'),
-      path.join(process.cwd(), 'public', 'eventide_banner.png'),
-      path.join(__dirname, 'eventide_banner.png'),
-      path.join(process.cwd(), 'eventide_banner.png'),
-      'public/eventide_banner.png',
-      'eventide_banner.png'
-    ];
-
+    const bannerPath = path.join(__dirname, 'public', 'eventide_banner.png');
     let bannerBuf = null;
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        console.log(`[menu] ✅ Banner found at: ${p}`);
-        bannerBuf = fs.readFileSync(p);
-        break;
-      }
-    }
-
-    if (!bannerBuf) {
-      console.log(`[menu] ⚠️ Local banner not found. Trying mirrors...`);
-      // Try primary mirror, then emergency fallback
-      bannerBuf = await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png') 
-               || await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png'); // Repeat for reliability or use different mirror if available
+    if (fs.existsSync(bannerPath)) {
+      bannerBuf = fs.readFileSync(bannerPath);
+    } else {
+      bannerBuf = await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png');
     }
 
     if (bannerBuf) {
-      await sock.sendMessage(jid, { text: scenes.mid, edit: sent.key });
-      await new Promise(r => setTimeout(r, 1000));
       await sock.sendMessage(jid, {
         image: bannerBuf,
         caption: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_'
       });
     } else {
-      throw new Error('Banner not found in any local path or online mirror');
+      throw new Error('Banner not found');
     }
   } catch (e) {
-    console.log('[menu] ❌ Banner critical failure:', e.message);
+    console.log('[menu] Banner failed, falling back to text:', e.message);
     await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_', edit: sent.key });
   }
 
