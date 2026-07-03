@@ -2403,20 +2403,6 @@ async function sendMenuDpiPrompt(sock, jid, persona = 'eclipse', quotedMsg = nul
   }));
 
   try {
-    await sendInteractiveMessage(sock, jid, {
-      text,
-      footer,
-      interactiveButtons: quickButtons,
-    }, {
-      quoted: quotedMsg?.message ? quotedMsg : undefined,
-    });
-    console.log(`[menu-dpi] ✅ Interactive DPI prompt sent (button-helper) to ${jid}`);
-    return;
-  } catch (e) {
-    console.error('[menu-dpi] ❌ button-helper prompt failed:', e.message);
-  }
-
-  try {
     await sock.sendMessage(jid, {
       text,
       footer,
@@ -2431,6 +2417,20 @@ async function sendMenuDpiPrompt(sock, jid, persona = 'eclipse', quotedMsg = nul
     return;
   } catch (e) {
     console.error('[menu-dpi] ❌ legacy buttons prompt failed:', e.message);
+  }
+
+  try {
+    await sendInteractiveMessage(sock, jid, {
+      text,
+      footer,
+      interactiveButtons: quickButtons,
+    }, {
+      quoted: quotedMsg?.message ? quotedMsg : undefined,
+    });
+    console.log(`[menu-dpi] ✅ Interactive DPI prompt sent (button-helper) to ${jid}`);
+    return;
+  } catch (e) {
+    console.error('[menu-dpi] ❌ button-helper prompt failed:', e.message);
   }
 
   const fallback = getSupportedMenuDpis().join(', ');
@@ -2657,6 +2657,29 @@ function buildMenuListConfig(persona = 'eclipse', isDev = false) {
     sectionTitle: 'Choose Your Path',
     rows: buildMenuRows(isDev),
   };
+}
+
+function extractInteractiveButtonId(paramsJson = '') {
+  if (!paramsJson) return '';
+  try {
+    const params = typeof paramsJson === 'string' ? JSON.parse(paramsJson) : paramsJson;
+    if (!params || typeof params !== 'object') return '';
+
+    const direct = params.id || params.selectedId || params.selected_id || params.button_id || params.rowId || params.row_id || params.option_id;
+    if (direct) return String(direct);
+
+    const nestedCandidates = [params.response_json, params.paramsJson, params.native_flow_response, params.selection];
+    for (const candidate of nestedCandidates) {
+      if (!candidate) continue;
+      try {
+        const nested = typeof candidate === 'string' ? JSON.parse(candidate) : candidate;
+        if (!nested || typeof nested !== 'object') continue;
+        const nestedId = nested.id || nested.selectedId || nested.selected_id || nested.button_id || nested.rowId || nested.row_id || nested.option_id;
+        if (nestedId) return String(nestedId);
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return '';
 }
 
 function buildEngagementNodes(isGroup = false) {
@@ -5408,8 +5431,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       // Path 1: newer clients — interactiveResponseMessage (native_flow)
       if (msg.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
         try {
-          const params = JSON.parse(msg.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
-          buttonId = params.id || '';
+          buttonId = extractInteractiveButtonId(msg.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
           console.log(`[button-detect] Path 1 (nativeFlow): id="${buttonId}"`);
         } catch (e) {}
       }
@@ -5439,16 +5461,14 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       // Path 5: viewOnce wrapped interactiveResponseMessage
       if (!buttonId && msg.message?.viewOnceMessage?.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
         try {
-          const params = JSON.parse(msg.message.viewOnceMessage.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
-          buttonId = params.id || '';
+          buttonId = extractInteractiveButtonId(msg.message.viewOnceMessage.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
           console.log(`[button-detect] Path 5 (viewOnce nativeFlow): id="${buttonId}"`);
         } catch (e) {}
       }
       // Path 6: viewOnceMessageV2 wrapped interactiveResponseMessage
       if (!buttonId && msg.message?.viewOnceMessageV2?.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
         try {
-          const params = JSON.parse(msg.message.viewOnceMessageV2.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
-          buttonId = params.id || '';
+          buttonId = extractInteractiveButtonId(msg.message.viewOnceMessageV2.message.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
           console.log(`[button-detect] Path 6 (viewOnceV2 nativeFlow): id="${buttonId}"`);
         } catch (e) {}
       }
@@ -5457,8 +5477,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         const inner = msg.message.ephemeralMessage.message;
         if (inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
           try {
-            const params = JSON.parse(inner.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
-            buttonId = params.id || '';
+            buttonId = extractInteractiveButtonId(inner.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
             console.log(`[button-detect] Path 7a (ephemeral nativeFlow): id="${buttonId}"`);
           } catch (e) {}
         }
