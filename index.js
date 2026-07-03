@@ -2280,12 +2280,12 @@ function buildMenuTypeLoadingText(persona = 'eclipse', dpi = '400') {
 
 function getMenuBannerCandidates() {
   return [
-    path.join(__dirname, 'menu_banner.jpg'),
-    path.join(__dirname, 'menu_banner.png'),
-    path.join(__dirname, 'eventide_banner.png'),
-    path.join(__dirname, 'public', 'eventide_banner.png'),
-    path.join(__dirname, 'uploads', 'eventide_banner.png'),
     path.join('/home/user/uploads', 'eventide_banner.png'),
+    path.join(__dirname, 'uploads', 'eventide_banner.png'),
+    path.join(__dirname, 'public', 'eventide_banner.png'),
+    path.join(__dirname, 'eventide_banner.png'),
+    path.join(__dirname, 'menu_banner.png'),
+    path.join(__dirname, 'menu_banner.jpg'),
   ];
 }
 
@@ -2657,7 +2657,12 @@ async function sendMenuFinalStage(sock, jid, persona = 'eclipse', isDev = false,
     const anchorMsg = await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi);
     await sendBusinessPollMenu(sock, jid, persona, isDev, anchorMsg);
   } else {
+    /*
+    // Combined image + caption + menu attempt kept for later tuning.
     await sendMenuListWithMedia(sock, jid, quotedMsg, persona, isDev, dpi);
+    */
+    const anchorMsg = await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi);
+    await sendMenuList(sock, jid, anchorMsg, persona, isDev);
   }
 }
 
