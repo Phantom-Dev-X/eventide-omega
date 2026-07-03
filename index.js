@@ -2389,18 +2389,29 @@ function buildMenuFinalCaption(persona = 'eclipse', dpi = '370', isDev = false) 
     '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_';
 }
 
+function buildQuickReplyNativeButtons(prefix = 'dpi') {
+  return getSupportedMenuDpis().map((dpi) => ({
+    name: 'quick_reply',
+    buttonParamsJson: JSON.stringify({
+      display_text: getMenuDpiPreset(dpi).label,
+      id: `${prefix}_${getMenuDpiPreset(dpi).value}`,
+    })
+  }));
+}
+
+function buildQuickReplyShorthandButtons(prefix = 'dpi') {
+  return getSupportedMenuDpis().map((dpi) => ({
+    id: `${prefix}_${getMenuDpiPreset(dpi).value}`,
+    text: getMenuDpiPreset(dpi).label,
+  }));
+}
+
 async function sendMenuDpiPrompt(sock, jid, persona = 'eclipse', quotedMsg = null) {
   const text = buildMenuDpiPrompt(persona);
   const footer = persona === 'astraea'
     ? '☀ TAP YOUR DEVICE DPI BELOW'
     : '🌑 TAP YOUR DEVICE DPI BELOW';
-  const quickButtons = getSupportedMenuDpis().map((dpi) => ({
-    name: 'quick_reply',
-    buttonParamsJson: JSON.stringify({
-      display_text: getMenuDpiPreset(dpi).label,
-      id: getMenuDpiPreset(dpi).buttonId,
-    })
-  }));
+  const quickButtons = buildQuickReplyNativeButtons('dpi');
 
   try {
     await sock.sendMessage(jid, {
@@ -2438,6 +2449,107 @@ async function sendMenuDpiPrompt(sock, jid, persona = 'eclipse', quotedMsg = nul
     text: `${text}\n\nReply with one of these DPI values: *${fallback}*`
   }, quotedMsg?.message ? { quoted: quotedMsg } : {});
   console.log(`[menu-dpi] ⚠️ Fallback text DPI prompt sent to ${jid}`);
+}
+
+async function sendDpiPromptTestMatrix(sock, jid, quotedMsg = null) {
+  const footer = 'EVENTIDE OMEGA · DPI TEST';
+  const intro = buildOmegaTerminal(
+    '🧪 *DPI QUICK-REPLY TEST CHAMBER*\n\n' +
+    'Tap *370* on each test message below.\n\n' +
+    'Whichever variant responds correctly is the one we should keep for Stage 4.'
+  );
+  await sock.sendMessage(jid, { text: intro }, quotedMsg ? quotedOpts(quotedMsg) : {});
+
+  const variants = [
+    {
+      key: 'helper_shorthand',
+      label: 'TEST A — helper buttons shorthand',
+      send: async () => sendInteractiveMessage(sock, jid, {
+        text: `${buildOmegaTerminal('TEST A\nhelper buttons shorthand')}`,
+        footer,
+        buttons: buildQuickReplyShorthandButtons('testdpi_helper_shorthand'),
+      }, { quoted: quotedMsg?.message ? quotedMsg : undefined })
+    },
+    {
+      key: 'helper_explicit',
+      label: 'TEST B — helper explicit quick_reply',
+      send: async () => sendInteractiveMessage(sock, jid, {
+        text: `${buildOmegaTerminal('TEST B\nhelper explicit quick_reply')}`,
+        footer,
+        interactiveButtons: buildQuickReplyNativeButtons('testdpi_helper_explicit'),
+      }, { quoted: quotedMsg?.message ? quotedMsg : undefined })
+    },
+    {
+      key: 'helper_raw',
+      label: 'TEST C — helper raw interactiveMessage',
+      send: async () => sendInteractiveMessage(sock, jid, {
+        interactiveMessage: {
+          body: { text: buildOmegaTerminal('TEST C\nhelper raw interactiveMessage') },
+          footer: { text: footer },
+          header: { title: '', subtitle: '', hasMediaAttachment: false },
+          nativeFlowMessage: { buttons: buildQuickReplyNativeButtons('testdpi_helper_raw') }
+        }
+      }, { quoted: quotedMsg?.message ? quotedMsg : undefined })
+    },
+    {
+      key: 'vanilla_interactive',
+      label: 'TEST D — vanilla interactiveButtons',
+      send: async () => sock.sendMessage(jid, {
+        text: buildOmegaTerminal('TEST D\nvanilla interactiveButtons'),
+        footer,
+        interactiveButtons: buildQuickReplyNativeButtons('testdpi_vanilla_interactive')
+      }, quotedMsg?.message ? { quoted: quotedMsg } : {})
+    },
+    {
+      key: 'legacy_buttons',
+      label: 'TEST E — legacy buttons',
+      send: async () => sock.sendMessage(jid, {
+        text: buildOmegaTerminal('TEST E\nlegacy buttons'),
+        footer,
+        buttons: getSupportedMenuDpis().map((dpi) => ({
+          buttonId: `testdpi_legacy_buttons_${getMenuDpiPreset(dpi).value}`,
+          buttonText: { displayText: getMenuDpiPreset(dpi).label },
+          type: 1,
+        })),
+        headerType: 1,
+      }, quotedMsg?.message ? { quoted: quotedMsg } : {})
+    }
+  ];
+
+  for (const variant of variants) {
+    try {
+      await variant.send();
+      console.log(`[testdpi] ✅ ${variant.label} sent to ${jid}`);
+    } catch (e) {
+      console.error(`[testdpi] ❌ ${variant.label} failed:`, e.message);
+      await sock.sendMessage(jid, {
+        text: buildOmegaTerminal(`${variant.label}\nfailed to send: ${e.message}`)
+      }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+    }
+    await new Promise(r => setTimeout(r, 800));
+  }
+}
+
+async function handleDpiTestButton(sock, jid, msg, buttonId = '') {
+  const parts = String(buttonId || '').split('_');
+  const dpi = parts[parts.length - 1] || 'unknown';
+  const variantKey = parts.slice(1, -1).join('_') || 'unknown';
+  const variantLabelMap = {
+    'helper_shorthand': 'helper buttons shorthand',
+    'helper_explicit': 'helper explicit quick_reply',
+    'helper_raw': 'helper raw interactiveMessage',
+    'vanilla_interactive': 'vanilla interactiveButtons',
+    'legacy_buttons': 'legacy buttons',
+  };
+  const variantLabel = variantLabelMap[variantKey] || variantKey;
+  await sock.sendMessage(jid, {
+    text: buildOmegaTerminal(
+      `✅ *DPI TEST CALLBACK RECEIVED*\n\n` +
+      `Variant: *${variantLabel}*\n` +
+      `Selection: *${dpi}*\n` +
+      `ID: *${buttonId}*`
+    )
+  }, quotedOpts(msg));
 }
 
 async function sendMenuBannerCaption(sock, jid, persona = 'eclipse', isDev = false, quotedMsg = null, dpi = '370') {
@@ -5491,6 +5603,12 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         }
       }
 
+      if (buttonId && buttonId.startsWith('testdpi_')) {
+        console.log(`[button] ✅ Routing DPI test button: ${buttonId} from ${jid}`);
+        await handleDpiTestButton(sock, jid, msg, buttonId);
+        return;
+      }
+
       if (buttonId && buttonId.startsWith('dpi_')) {
         console.log(`[button] ✅ Routing DPI button: ${buttonId} from ${jid}`);
         await handleMenuDpiSelection(sock, jid, msg, buttonId);
@@ -5866,7 +5984,17 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       }
 
       if (lower === '.help') {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.send <number> [text] — send msg to a number (owner only)\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n.acccheck — check if this is Business or Normal account\n.testpoll — trigger a test Business poll-based menu (owner only)\n\nMore coming.') }, quotedOpts(msg));
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.send <number> [text] — send msg to a number (owner only)\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n.acccheck — check if this is Business or Normal account\n.testpoll — trigger a test Business poll-based menu (owner only)\n.testdpiui — send multiple Stage 4 DPI button test variants (owner only)\n\nMore coming.') }, quotedOpts(msg));
+        return;
+      }
+
+      // ── .testdpiui command (owner only) — sends multiple Stage 4 button variants ──
+      if (lower === '.testdpiui' || lower === '.testquickreply') {
+        if (!senderIsOwner) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('🔒 *ACCESS_DENIED*\n\n   only the sovereign may\n   trigger the dpi test chamber.') }, quotedOpts(msg));
+          return;
+        }
+        await sendDpiPromptTestMatrix(sock, jid, msg);
         return;
       }
 
@@ -8515,7 +8643,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       if (lower.startsWith(".")) {
         // Check if this is a known command missing arguments (not an unknown command)
         const cmdWord = lower.split(/\s+/)[0];
-        const knownCmds = ['.menu','.eclipse','.astraea','.phantom','.ping','.send','.uptime','.status','.owner','.dev','.help','.acccheck','.kill','.mode','.vv','.xx','.vtn','.new','.block','.unblock','.blocklist','.join','.leave','.broadcast','.getpp','.getgpp','.chatinfo','.groups','.setname','.setbio','.setpp','.setmenupic','.delmenupic','.setalias','.delalias','.aliaslist','.prefix','.autoreact','.persona','.restart','.relink','.pair','.telegram.pair','.kick','.add','.promote','.demote','.setgname','.setgdesc','.setgpp','.lock','.unlock','.link','.revoke','.tagall','.everyone','.all','.hidetag','.ht','.membercount','.antilink','.antispam','.antimention','.antidelete','.antibot','.antibug','.warn','.warnlist','.resetwarn','.welcome','.setwelcome','.goodbye','.setgoodbye','.schedule','.unschedule','.schedules','.joke','.fact','.quote','.roast','.compliment','.ship','.rate','.vibe','.8ball','.flip','.roll','.dare','.truth','.rps','.dl','.yt','.ytmp3','.play','.lyrics','.tiktok','.ig','.fb','.x','.pin','.translate','.weather','.calc','.genpwd','.base64','.removebg','.sticker','.s','.toimg','.tts','.voice','.tovn','.qr','.blur','.invert','.grayscale','.brighten','.darken','.sharpen','.pixelate'];
+        const knownCmds = ['.menu','.eclipse','.astraea','.phantom','.ping','.send','.uptime','.status','.owner','.dev','.help','.acccheck','.kill','.mode','.vv','.xx','.vtn','.new','.block','.unblock','.blocklist','.join','.leave','.broadcast','.getpp','.getgpp','.chatinfo','.groups','.setname','.setbio','.setpp','.setmenupic','.delmenupic','.setalias','.delalias','.aliaslist','.prefix','.autoreact','.persona','.restart','.relink','.pair','.telegram.pair','.testpoll','.testdpiui','.testquickreply','.kick','.add','.promote','.demote','.setgname','.setgdesc','.setgpp','.lock','.unlock','.link','.revoke','.tagall','.everyone','.all','.hidetag','.ht','.membercount','.antilink','.antispam','.antimention','.antidelete','.antibot','.antibug','.warn','.warnlist','.resetwarn','.welcome','.setwelcome','.goodbye','.setgoodbye','.schedule','.unschedule','.schedules','.joke','.fact','.quote','.roast','.compliment','.ship','.rate','.vibe','.8ball','.flip','.roll','.dare','.truth','.rps','.dl','.yt','.ytmp3','.play','.lyrics','.tiktok','.ig','.fb','.x','.pin','.translate','.weather','.calc','.genpwd','.base64','.removebg','.sticker','.s','.toimg','.tts','.voice','.tovn','.qr','.blur','.invert','.grayscale','.brighten','.darken','.sharpen','.pixelate'];
         if (knownCmds.includes(cmdWord)) {
           await sock.sendMessage(jid, { text: `⚠️ *${cmdWord}* requires arguments.\n\nType *.help* or select a menu for usage info.` }, quotedOpts(msg));
         } else {
