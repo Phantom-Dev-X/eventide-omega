@@ -2303,6 +2303,73 @@ function loadMenuBannerBuffer() {
   return null;
 }
 
+// ── SUBMENU IMAGE POOLS (future-proof: each menu can have multiple random images) ──
+const SUBMENU_IMAGE_POOLS = {
+  menu_owner: ['eventide_banner3.png'],
+  menu_config: ['config_menu_1.png'],
+  menu_system: ['eclipse_system3.png'],
+  menu_group: ['eclipse_group.png'],
+  menu_fun: ['eclipse_chill.png'],
+  menu_bug: [],
+  menu_utility: ['utility_menu_4.png'],
+  menu_dev: [],
+};
+
+function getSubMenuImagePool(buttonId) {
+  return Array.isArray(SUBMENU_IMAGE_POOLS[buttonId]) ? [...SUBMENU_IMAGE_POOLS[buttonId]] : [];
+}
+
+function getSubMenuImageCandidates(buttonId) {
+  const fileNames = getSubMenuImagePool(buttonId);
+  if (!fileNames.length) return [];
+
+  const baseDirs = [
+    path.join('/home/user/uploads'),
+    path.join(__dirname, 'uploads'),
+    path.join(__dirname, 'public', 'menu_media', buttonId),
+    path.join(__dirname, 'public', 'menu_media'),
+    path.join(__dirname, 'public'),
+  ];
+
+  const candidates = [];
+  for (const fileName of fileNames) {
+    for (const baseDir of baseDirs) {
+      candidates.push(path.join(baseDir, fileName));
+    }
+  }
+  return candidates;
+}
+
+function pickRandomSubMenuImage(buttonId) {
+  const existing = [];
+  for (const candidatePath of getSubMenuImageCandidates(buttonId)) {
+    try {
+      if (fs.existsSync(candidatePath)) {
+        existing.push(candidatePath);
+      }
+    } catch (_) {}
+  }
+  if (!existing.length) return null;
+  const pickedPath = existing[Math.floor(Math.random() * existing.length)];
+  return {
+    path: pickedPath,
+    fileName: path.basename(pickedPath),
+  };
+}
+
+function loadSubMenuImageBuffer(buttonId) {
+  const picked = pickRandomSubMenuImage(buttonId);
+  if (!picked) return null;
+  try {
+    return {
+      ...picked,
+      buffer: fs.readFileSync(picked.path),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 // Progress frames (exact)
 const eclipseProgressFrames = [
   "   ◐ initiating umbral protocol\n" +
@@ -2382,6 +2449,123 @@ async function shouldUseBusinessPollMenu(sock) {
     }
   }
   return usePollForMenu;
+}
+
+function getBusinessLegacyMode(ownerNum) {
+  if (!ownerNum) return null;
+  const saved = String(getUserValue(normalizeNum(ownerNum), 'businessLegacyMode', '') || '').trim().toLowerCase();
+  return ['old_legacy', 'new_legacy'].includes(saved) ? saved : null;
+}
+
+function setBusinessLegacyMode(ownerNum, mode) {
+  const normalizedMode = String(mode || '').trim().toLowerCase();
+  if (!ownerNum || !['old_legacy', 'new_legacy'].includes(normalizedMode)) return null;
+  setUserValue(normalizeNum(ownerNum), 'businessLegacyMode', normalizedMode);
+  return normalizedMode;
+}
+
+function setLegacyModePromptPending(jid, value = true) {
+  if (!global.legacyModePromptMap) global.legacyModePromptMap = {};
+  if (value) global.legacyModePromptMap[jid] = true;
+  else delete global.legacyModePromptMap[jid];
+}
+
+function hasLegacyModePromptPending(jid) {
+  return !!(global.legacyModePromptMap && global.legacyModePromptMap[jid]);
+}
+
+function buildLegacyModeSavedText(persona = 'eclipse', mode = 'old_legacy') {
+  const label = mode === 'new_legacy' ? 'NEW LEGACY' : 'OLD LEGACY';
+  if (persona === 'astraea') {
+    return buildOmegaTerminal(
+      `☀ *LEGACY MODE SEALED*\n\n` +
+      `Your choice of *${label}* has been saved successfully.\n\n` +
+      'The court will remember this preference.'
+    );
+  }
+  return buildOmegaTerminal(
+    `🌑 *LEGACY MODE SEALED*\n\n` +
+    `Your choice of *${label}* has been saved successfully.\n\n` +
+    'The void will remember this preference.'
+  );
+}
+
+async function sendBusinessLegacyModePoll(sock, jid, persona = 'eclipse', quotedMsg = null) {
+  const rows = [
+    { title: 'OLD LEGACY', id: 'old_legacy' },
+    { title: 'NEW LEGACY', id: 'new_legacy' },
+  ];
+
+  setLegacyModePromptPending(jid, true);
+
+  const pollTitle = '╭━━━━━━━━━━━━━━━━━━━━━━━━━╮\n┃ ⟡ EVENTIDE OMEGA TERMINAL\n┃ ⟡ CHOOSE LEGACY MODE\n╰━━━━━━━━━━━━━━━━━━━━━━━━━╯';
+  const pollOptions = rows.map((r, i) => `╰┈➤ [ ${i + 1}. ${r.title} ]`);
+  const crypto = require('crypto');
+  const pollSecret = crypto.randomBytes(32);
+
+  try {
+    const pollMsg = await sock.sendMessage(jid, {
+      poll: {
+        name: pollTitle,
+        values: pollOptions,
+        selectableCount: 1,
+        messageSecret: pollSecret
+      }
+    }, quotedMsg ? { quoted: quotedMsg } : {});
+
+    if (pollMsg?.key?.id) {
+      const actualSecret = pollMsg?.message?.messageContextInfo?.messageSecret || pollMsg?.messageContextInfo?.messageSecret || pollSecret;
+      const ownerNum = sock.user?.id?.split(':')[0]?.split('@')[0];
+      const pollData = {
+        kind: 'legacy_mode_picker',
+        secretHex: actualSecret.toString('hex'),
+        options: [...pollOptions],
+        ids: rows.map(r => r.id),
+        persona,
+        jid,
+        timestamp: Date.now(),
+        fullMessage: pollMsg.message || null
+      };
+      if (ownerNum) {
+        addUserPoll(ownerNum, pollMsg.key.id, pollData);
+      } else {
+        pollCreationCache[pollMsg.key.id] = pollData;
+        savePollCache();
+      }
+    }
+
+    console.log(`[legacy-mode] ✅ Legacy mode poll sent to ${jid}`);
+  } catch (e) {
+    console.error('[legacy-mode] ❌ Poll send failed:', e.message);
+    await sock.sendMessage(jid, {
+      text: buildOmegaTerminal('Choose your legacy mode:\n\n1. OLD LEGACY\n2. NEW LEGACY')
+    }, quotedMsg ? { quoted: quotedMsg } : {});
+  }
+}
+
+async function handleBusinessLegacyModeSelection(sock, jid, msg, mappedId, cached, pollMessageId) {
+  const ownerNum = normalizeNum(sock.user?.id?.split(':')[0]?.split('@')[0] || '');
+  const persona = cached?.persona || getBotPersonaByOwner(ownerNum);
+  const savedMode = setBusinessLegacyMode(ownerNum, mappedId);
+  setLegacyModePromptPending(jid, false);
+
+  if (ownerNum && pollMessageId) {
+    try { removeUserPoll(ownerNum, pollMessageId); } catch (_) {}
+  } else if (pollMessageId && pollCreationCache[pollMessageId]) {
+    delete pollCreationCache[pollMessageId];
+    savePollCache();
+  }
+
+  try {
+    const deleteKey = msg.message?.pollUpdateMessage?.pollCreationMessageKey || { remoteJid: jid, fromMe: true, id: pollMessageId };
+    await sock.sendMessage(jid, { delete: deleteKey });
+  } catch (deleteErr) {
+    console.log('[legacy-mode] Poll delete failed:', deleteErr.message);
+  }
+
+  await sock.sendMessage(jid, {
+    text: buildLegacyModeSavedText(persona, savedMode || mappedId)
+  }, quotedOpts(msg));
 }
 
 function buildMenuFinalCaption(persona = 'eclipse', dpi = '370', isDev = false) {
@@ -2654,6 +2838,14 @@ async function sendMenuFinalStage(sock, jid, persona = 'eclipse', isDev = false,
   }
 
   if (await shouldUseBusinessPollMenu(sock)) {
+    const ownerNum = normalizeNum(sock.user?.id?.split(':')[0]?.split('@')[0] || '');
+    const legacyMode = getBusinessLegacyMode(ownerNum);
+
+    if (legacyMode === 'old_legacy') {
+      await sendBusinessPollMenu(sock, jid, persona, isDev, quotedMsg);
+      return;
+    }
+
     const anchorMsg = await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi);
     await sendBusinessPollMenu(sock, jid, persona, isDev, anchorMsg);
   } else {
@@ -2745,8 +2937,17 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
   await sendMenuFinalStage(sock, jid, persona, isDev, sent, savedDpi);
   */
 
-  // DPI flow temporarily disabled — continue straight to the final menu stage using the current 370 layout.
+  // Business-only legacy mode chooser
   clearPendingMenuDpiState(jid, requester);
+  if (await shouldUseBusinessPollMenu(sock)) {
+    const legacyMode = getBusinessLegacyMode(ownerNum);
+    if (!legacyMode) {
+      await sendBusinessLegacyModePoll(sock, jid, persona, sent);
+      return;
+    }
+  }
+
+  // DPI flow temporarily disabled — continue straight to the final menu stage using the current 370 layout.
   await sendMenuFinalStage(sock, jid, persona, isDev, sent, '370');
 }
 
@@ -4698,22 +4899,34 @@ function buildUtilityMenuAstraea() {
   );
 }
 
-async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null) {
+async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null, options = {}) {
   console.log(`[button] ${buttonId} from ${jid}`);
   const senderJidForDev = msg?.key?.participant || jid;
   const isDev = isDevJid(senderJidForDev);
 
   const ownerNum = sock.user?.id ? normalizeNum(sock.user.id.split(':')[0].split('@')[0]) : '';
-  const persona = getBotPersonaByOwner(ownerNum);
+  const persona = options.personaOverride || getBotPersonaByOwner(ownerNum);
+  const useBusinessPollMenu = await shouldUseBusinessPollMenu(sock);
+  const forceImage = options.forceImage === true;
 
-  // Owner, Config, System — full content menus
+  // Owner, Config, System, Group, Fun, Utility — full content menus
   const subContent = getSubMenuContent(buttonId, persona);
   if (subContent) {
     if (editMsgKey) {
       return await sock.sendMessage(jid, { text: subContent, edit: editMsgKey }, quotedOpts(msg));
-    } else {
-      return await sock.sendMessage(jid, { text: subContent }, quotedOpts(msg));
     }
+
+    if (!useBusinessPollMenu || forceImage) {
+      const subMenuImage = loadSubMenuImageBuffer(buttonId);
+      if (subMenuImage?.buffer) {
+        return await sock.sendMessage(jid, {
+          image: subMenuImage.buffer,
+          caption: subContent,
+        }, quotedOpts(msg));
+      }
+    }
+
+    return await sock.sendMessage(jid, { text: subContent }, quotedOpts(msg));
   }
 
 // Fun menu now handled by getSubMenuContent above
@@ -5628,7 +5841,18 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
       if (buttonId && buttonId.startsWith('menu_')) {
         console.log(`[button] ✅ Routing menu button: ${buttonId} from ${jid}`);
-        await handleMenuButton(sock, jid, msg, buttonId);
+        const usePollForMenu = await shouldUseBusinessPollMenu(sock);
+        if (!usePollForMenu) {
+          const loadingText = getMenuLoadingText(buttonId);
+          queueMenuAction(jid, async () => {
+            if (loadingText) {
+              await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+            }
+            await handleMenuButton(sock, jid, msg, buttonId);
+          });
+        } else {
+          await handleMenuButton(sock, jid, msg, buttonId);
+        }
         return;
       }
       // If we detected a button but it's not a menu_ button, log it
@@ -5820,7 +6044,27 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
           if (mappedId) {
             console.log(`[poll-menu] ✅ Successfully matched vote to ${mappedId} for ${jid}`);
+
+            if (cached?.kind === 'legacy_mode_picker') {
+              await handleBusinessLegacyModeSelection(sock, jid, msg, mappedId, cached, pollCreationKey.id);
+              return;
+            }
+
+            const businessLegacyMode = ownerNum ? getBusinessLegacyMode(ownerNum) : null;
             const loadingText = getMenuLoadingText(mappedId);
+
+            if (businessLegacyMode === 'new_legacy') {
+              queueMenuAction(jid, async () => {
+                if (loadingText) {
+                  await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+                }
+                await handleMenuButton(sock, jid, msg, mappedId, null, {
+                  forceImage: true,
+                  personaOverride: cached?.persona || getBotPersonaByOwner(ownerNum)
+                });
+              });
+              return;
+            }
 
             // Extract unique voter number to completely isolate user menu states across multi-sessions & groups
             const voterJid = msg.key.participant || msg.key.remoteJid || '';
@@ -5865,6 +6109,15 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
             return;
           } else {
             console.log(`[poll-menu] ⚠️ Could not decrypt or match poll vote for ${jid}`);
+
+            if (cached?.kind === 'legacy_mode_picker') {
+              setLegacyModePromptPending(jid, true);
+              await sock.sendMessage(jid, {
+                text: '⚠️ Received your vote, but could not verify the exact legacy mode.\n\nReply with *1* for OLD LEGACY or *2* for NEW LEGACY.'
+              }, quotedOpts(msg));
+              return;
+            }
+
             // Show fallback prompt — tell user to type the number instead
             if (pollCreationKey.fromMe || (global.menuStateMap && global.menuStateMap[jid]) ) {
               // Re-activate the menuStateMap so the text fallback (typing "1", "2" etc) works
@@ -5895,6 +6148,17 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         }
       }
 
+      // ── HANDLE TEXT FALLBACK FOR BUSINESS LEGACY MODE PICKER ──
+      if (text && hasLegacyModePromptPending(jid)) {
+        let mappedLegacy = '';
+        if (/^[1]($|\s|\.)/.test(text) || lower.includes('old legacy')) mappedLegacy = 'old_legacy';
+        else if (/^[2]($|\s|\.)/.test(text) || lower.includes('new legacy')) mappedLegacy = 'new_legacy';
+        if (mappedLegacy) {
+          await handleBusinessLegacyModeSelection(sock, jid, msg, mappedLegacy, { persona }, null);
+          return;
+        }
+      }
+
       // ── HANDLE TEXT FALLBACK FOR MENU (If user replies with 1, 2, 3, 4, 5 or name) ──
       if (text && global.menuStateMap && global.menuStateMap[jid]) {
         let mappedId = '';
@@ -5909,6 +6173,21 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
 
         if (mappedId) {
           const loadingText = getMenuLoadingText(mappedId);
+          const businessLegacyMode = ownerNum ? getBusinessLegacyMode(ownerNum) : null;
+
+          if (businessLegacyMode === 'new_legacy') {
+            queueMenuAction(jid, async () => {
+              if (loadingText) {
+                await sock.sendMessage(jid, { text: loadingText }, quotedOpts(msg));
+              }
+              if (global.menuStateMap) delete global.menuStateMap[jid];
+              await handleMenuButton(sock, jid, msg, mappedId, null, {
+                forceImage: true,
+                personaOverride: getBotPersonaByOwner(ownerNum)
+              });
+            });
+            return;
+          }
 
           const voterJid = msg.key.participant || msg.key.remoteJid || '';
           const voterNum = normalizeNum(voterJid.split('@')[0].split(':')[0]);
