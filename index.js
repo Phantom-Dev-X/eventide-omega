@@ -2724,6 +2724,7 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
   await sock.sendMessage(jid, { text: buildMenuArrowStage(persona), edit: sent.key });
   await new Promise(r => setTimeout(r, 1200));
 
+  /*
   // Stage 4 ─ first-time DPI selection prompt (saved per paired account)
   const savedDpi = ownerNum ? getSavedMenuDpi(ownerNum) : null;
   if (!savedDpi) {
@@ -2734,9 +2735,14 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
     return;
   }
 
-  // Returning sessions skip DPI prompt and continue directly
+  // Stage 5 ─ DPI saved / DPI-aware continuation
   clearPendingMenuDpiState(jid, requester);
   await sendMenuFinalStage(sock, jid, persona, isDev, sent, savedDpi);
+  */
+
+  // DPI flow temporarily disabled — continue straight to the final menu stage using the current 370 layout.
+  clearPendingMenuDpiState(jid, requester);
+  await sendMenuFinalStage(sock, jid, persona, isDev, sent, '370');
 }
 
 function isDevJid(jid) {
