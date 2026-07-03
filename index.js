@@ -2155,6 +2155,154 @@ function buildAstraeaMain(isDev) {
          "\" *the light does not ask permission. it simply arrives* .\"";
 }
 
+const MENU_DPI_PRESETS = {
+  '370': { value: '370', buttonId: 'dpi_370', label: '370', stage6Variant: 'v370' },
+  '400': { value: '400', buttonId: 'dpi_400', label: '400', stage6Variant: 'v400' },
+  '520': { value: '520', buttonId: 'dpi_520', label: '520', stage6Variant: 'v520' },
+};
+
+const MENU_FINAL_SCENE_RENDERERS = {
+  '370': (persona = 'eclipse', isDev = false) => persona === 'astraea' ? buildAstraeaMain(isDev) : buildEclipseMain(isDev),
+  '400': (persona = 'eclipse', isDev = false) => persona === 'astraea' ? buildAstraeaMain(isDev) : buildEclipseMain(isDev),
+  '520': (persona = 'eclipse', isDev = false) => persona === 'astraea' ? buildAstraeaMain(isDev) : buildEclipseMain(isDev),
+};
+
+function getSupportedMenuDpis() {
+  return Object.keys(MENU_DPI_PRESETS);
+}
+
+function getMenuDpiPreset(dpi = '370') {
+  return MENU_DPI_PRESETS[String(dpi)] || MENU_DPI_PRESETS['370'];
+}
+
+function getMenuDpiStateKey(jid, requesterNum = '') {
+  return `${String(jid || '')}::${normalizeNum(requesterNum || '')}`;
+}
+
+function getMenuRequesterNumFromMessage(msg, fallbackJid = '') {
+  const raw = msg?.key?.participant || msg?.key?.remoteJid || fallbackJid || '';
+  return normalizeNum(String(raw).split('@')[0].split(':')[0]);
+}
+
+function getSavedMenuDpi(ownerNum) {
+  if (!ownerNum) return null;
+  const saved = String(getUserValue(normalizeNum(ownerNum), 'menuDpi', '') || '').trim();
+  return MENU_DPI_PRESETS[saved] ? saved : null;
+}
+
+function saveMenuDpi(ownerNum, dpi) {
+  const preset = MENU_DPI_PRESETS[String(dpi)];
+  if (!ownerNum || !preset) return null;
+  setUserValue(normalizeNum(ownerNum), 'menuDpi', preset.value);
+  return preset.value;
+}
+
+function setPendingMenuDpiState(jid, requesterNum, data = {}) {
+  if (!global.menuDpiPromptState) global.menuDpiPromptState = {};
+  global.menuDpiPromptState[getMenuDpiStateKey(jid, requesterNum)] = {
+    ...data,
+    jid,
+    requesterNum: normalizeNum(requesterNum),
+    createdAt: Date.now(),
+  };
+}
+
+function getPendingMenuDpiState(jid, requesterNum) {
+  if (!global.menuDpiPromptState) return null;
+  return global.menuDpiPromptState[getMenuDpiStateKey(jid, requesterNum)] || null;
+}
+
+function clearPendingMenuDpiState(jid, requesterNum) {
+  if (!global.menuDpiPromptState) return;
+  delete global.menuDpiPromptState[getMenuDpiStateKey(jid, requesterNum)];
+}
+
+function buildMenuArrowStage(persona = 'eclipse') {
+  const arrowStrip = '👇'.repeat(24);
+  const tail = persona === 'astraea'
+    ? '☀ descend below — the court awaits.'
+    : '🌑 descend below — the void awaits.';
+  return `${arrowStrip}\n\n${tail}\n\n${arrowStrip}`;
+}
+
+function buildMenuDpiPrompt(persona = 'eclipse') {
+  if (persona === 'astraea') {
+    return buildOmegaTerminal(
+      '☀ *WELCOME TO EVENTIDE OMEGA*\n\n' +
+      'The divine terminal must align with your vessel.\n\n' +
+      'Choose your device DPI below to calibrate the menu perfectly.'
+    );
+  }
+  return buildOmegaTerminal(
+    '🌑 *WELCOME TO EVENTIDE OMEGA*\n\n' +
+    'The terminal must align with your vessel.\n\n' +
+    'Choose your device DPI below to calibrate the menu perfectly.'
+  );
+}
+
+function buildMenuDpiSavedText(persona = 'eclipse', dpi = '370') {
+  if (persona === 'astraea') {
+    return buildOmegaTerminal(
+      `☀ *DPI CALIBRATION SEALED*\n\n` +
+      `Your choice of *${dpi} DPI* has been engraved into the golden court.\n\n` +
+      '✦ THE CODEX IS UNSEALED ✦\n' +
+      'The path below now bends to your vessel.'
+    );
+  }
+  return buildOmegaTerminal(
+    `🌑 *DPI CALIBRATION SEALED*\n\n` +
+    `Your choice of *${dpi} DPI* has been etched into the void.\n\n` +
+    '⟢ THE CODEX IS UNSEALED ⟣\n' +
+    'The path below now bends to your vessel.'
+  );
+}
+
+function buildMenuFinalScene(persona = 'eclipse', dpi = '370', isDev = false) {
+  const preset = getMenuDpiPreset(dpi);
+  const renderer = MENU_FINAL_SCENE_RENDERERS[preset.value] || MENU_FINAL_SCENE_RENDERERS['370'];
+  return renderer(persona, isDev);
+}
+
+function buildMenuTypeLoadingText(persona = 'eclipse', dpi = '400') {
+  if (persona === 'astraea') {
+    return buildOmegaTerminal(
+      `☀ *MENU TYPE ${dpi} CALIBRATION*\n\n` +
+      `The *${dpi} DPI* divine layout is still being forged.\n\n` +
+      'Please return soon — the golden court is still aligning this vessel.'
+    );
+  }
+  return buildOmegaTerminal(
+    `🌑 *MENU TYPE ${dpi} CALIBRATION*\n\n` +
+    `The *${dpi} DPI* void layout is still loading.\n\n` +
+    'Return soon — this vessel is still being tuned inside the terminal.'
+  );
+}
+
+function getMenuBannerCandidates() {
+  return [
+    path.join(__dirname, 'menu_banner.jpg'),
+    path.join(__dirname, 'menu_banner.png'),
+    path.join(__dirname, 'eventide_banner.png'),
+    path.join(__dirname, 'public', 'eventide_banner.png'),
+    path.join(__dirname, 'uploads', 'eventide_banner.png'),
+    path.join('/home/user/uploads', 'eventide_banner.png'),
+  ];
+}
+
+function loadMenuBannerBuffer() {
+  for (const bannerPath of getMenuBannerCandidates()) {
+    try {
+      if (fs.existsSync(bannerPath)) {
+        return {
+          buffer: fs.readFileSync(bannerPath),
+          path: bannerPath,
+        };
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
 // Progress frames (exact)
 const eclipseProgressFrames = [
   "   ◐ initiating umbral protocol\n" +
@@ -2221,12 +2369,229 @@ function getPersonaScenes(persona = 'eclipse') {
   return { init: buildEclipseInit(), mid: buildEclipseVoid(), main: buildEclipseMain(), progress: eclipseProgressFrames };
 }
 
-// 3-STAGE MENU (edits the same message 3 times + progress)
-// Stage 1 = INIT with progress frames (loading style)
-// Stage 2 = MID (transition scene)
-// Stage 3 = FINAL (terminal scene, no progress bar)
-async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading', isDev = false) {
+async function shouldUseBusinessPollMenu(sock) {
+  let usePollForMenu = false;
+  const ownerNum = sock.user?.id?.split(':')[0]?.split('@')[0];
+  if (ownerNum) {
+    const bizStatus = getUserValue(ownerNum, 'isBusiness');
+    if (bizStatus !== undefined) {
+      usePollForMenu = bizStatus === true;
+    } else {
+      const platform = sock.authState?.creds?.platform;
+      usePollForMenu = ['smba', 'smbi'].includes(platform);
+    }
+  }
+  return usePollForMenu;
+}
+
+function buildMenuFinalCaption(persona = 'eclipse', dpi = '370', isDev = false) {
+  return buildMenuFinalScene(persona, dpi, isDev) +
+    '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_';
+}
+
+async function sendMenuDpiPrompt(sock, jid, persona = 'eclipse', quotedMsg = null) {
+  const text = buildMenuDpiPrompt(persona);
+  const footer = persona === 'astraea'
+    ? '☀ TAP YOUR DEVICE DPI BELOW'
+    : '🌑 TAP YOUR DEVICE DPI BELOW';
+  const quickButtons = getSupportedMenuDpis().map((dpi) => ({
+    name: 'quick_reply',
+    buttonParamsJson: JSON.stringify({
+      display_text: getMenuDpiPreset(dpi).label,
+      id: getMenuDpiPreset(dpi).buttonId,
+    })
+  }));
+
+  try {
+    await sendInteractiveMessage(sock, jid, {
+      text,
+      footer,
+      interactiveButtons: quickButtons,
+    }, {
+      quoted: quotedMsg?.message ? quotedMsg : undefined,
+    });
+    console.log(`[menu-dpi] ✅ Interactive DPI prompt sent (button-helper) to ${jid}`);
+    return;
+  } catch (e) {
+    console.error('[menu-dpi] ❌ button-helper prompt failed:', e.message);
+  }
+
+  try {
+    await sock.sendMessage(jid, {
+      text,
+      footer,
+      buttons: getSupportedMenuDpis().map((dpi) => ({
+        buttonId: getMenuDpiPreset(dpi).buttonId,
+        buttonText: { displayText: getMenuDpiPreset(dpi).label },
+        type: 1,
+      })),
+      headerType: 1,
+    }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+    console.log(`[menu-dpi] ✅ Interactive DPI prompt sent (legacy buttons) to ${jid}`);
+    return;
+  } catch (e) {
+    console.error('[menu-dpi] ❌ legacy buttons prompt failed:', e.message);
+  }
+
+  const fallback = getSupportedMenuDpis().join(', ');
+  await sock.sendMessage(jid, {
+    text: `${text}\n\nReply with one of these DPI values: *${fallback}*`
+  }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+  console.log(`[menu-dpi] ⚠️ Fallback text DPI prompt sent to ${jid}`);
+}
+
+async function sendMenuBannerCaption(sock, jid, persona = 'eclipse', isDev = false, quotedMsg = null, dpi = '370') {
+  const caption = buildMenuFinalCaption(persona, dpi, isDev);
+  try {
+    const banner = loadMenuBannerBuffer();
+    let bannerBuf = banner?.buffer || null;
+    if (!bannerBuf && typeof _ph_downloadBuffer === 'function') {
+      bannerBuf = await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png');
+    }
+
+    if (bannerBuf) {
+      return await sock.sendMessage(jid, {
+        image: bannerBuf,
+        caption,
+      }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+    }
+
+    throw new Error('Banner not found');
+  } catch (e) {
+    console.log('[menu] Banner failed, falling back to text:', e.message);
+    return await sock.sendMessage(jid, {
+      text: caption,
+    }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+  }
+}
+
+async function sendMenuListWithMedia(sock, jid, quotedMsg, persona = 'eclipse', isDev = false, dpi = '370') {
+  const { footer, buttonTitle, sectionTitle, rows } = buildMenuListConfig(persona, isDev);
+  const caption = buildMenuFinalCaption(persona, dpi, isDev);
+  let bannerBuf = null;
+  try {
+    const banner = loadMenuBannerBuffer();
+    bannerBuf = banner?.buffer || null;
+    if (!bannerBuf && typeof _ph_downloadBuffer === 'function') {
+      bannerBuf = await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png');
+    }
+  } catch (_) {}
+
+  if (bannerBuf) {
+    try {
+      await sock.sendMessage(jid, {
+        image: bannerBuf,
+        caption,
+        footer,
+        hasMediaAttachment: true,
+        interactiveButtons: [{
+          name: 'single_select',
+          buttonParamsJson: JSON.stringify({
+            title: buttonTitle,
+            sections: [{
+              title: sectionTitle,
+              rows: rows.map(r => ({
+                title: r.title,
+                id: r.id,
+                description: r.description || ''
+              }))
+            }]
+          })
+        }]
+      }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+      console.log(`[menu] ✅ Combined image + interactive list sent (vanilla media path) to ${jid}`);
+      return;
+    } catch (e) {
+      console.error('[menu] ❌ combined media interactive attempt failed:', e.message);
+    }
+
+    try {
+      await sock.sendMessage(jid, {
+        image: bannerBuf,
+        caption,
+        footer,
+        buttonText: buttonTitle,
+        sections: [{
+          title: sectionTitle,
+          rows: rows.map(r => ({
+            title: r.title,
+            rowId: r.id,
+            description: r.description || ''
+          }))
+        }]
+      }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+      console.log(`[menu] ✅ Combined image + legacy list sent to ${jid}`);
+      return;
+    } catch (e) {
+      console.error('[menu] ❌ combined media legacy list attempt failed:', e.message);
+    }
+  }
+
+  const anchorMsg = await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi);
+  await sendMenuList(sock, jid, anchorMsg, persona, isDev);
+}
+
+async function sendMenuFinalStage(sock, jid, persona = 'eclipse', isDev = false, quotedMsg = null, dpi = '370') {
+  await new Promise(r => setTimeout(r, 1500));
+
+  if (String(dpi) !== '370') {
+    await sock.sendMessage(jid, {
+      text: buildMenuTypeLoadingText(persona, dpi)
+    }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+    return;
+  }
+
+  if (await shouldUseBusinessPollMenu(sock)) {
+    const anchorMsg = await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi);
+    await sendBusinessPollMenu(sock, jid, persona, isDev, anchorMsg);
+  } else {
+    await sendMenuListWithMedia(sock, jid, quotedMsg, persona, isDev, dpi);
+  }
+}
+
+async function handleMenuDpiSelection(sock, jid, msg, rawSelection = '') {
+  const selectedDpi = String(rawSelection || '').replace(/^dpi_/, '').trim();
+  const preset = getMenuDpiPreset(selectedDpi);
+  if (!MENU_DPI_PRESETS[selectedDpi]) return false;
+
+  const ownerNum = normalizeNum(sock.user?.id?.split(':')[0]?.split('@')[0] || '');
+  const requesterNum = getMenuRequesterNumFromMessage(msg, jid);
+  const pending = getPendingMenuDpiState(jid, requesterNum);
+  const existingDpi = ownerNum ? getSavedMenuDpi(ownerNum) : null;
+
+  // Once this paired account has a DPI, ignore all later taps from old prompts.
+  if (existingDpi) {
+    clearPendingMenuDpiState(jid, requesterNum);
+    console.log(`[menu-dpi] Ignored stale DPI tap (${selectedDpi}) for paired account ${ownerNum}`);
+    return true;
+  }
+
+  const persona = pending?.persona || getBotPersonaByOwner(ownerNum);
+  const isDev = pending?.isDev || isDevJid(msg?.key?.participant || msg?.key?.remoteJid || '');
+  const saved = saveMenuDpi(ownerNum, preset.value);
+  if (!saved) {
+    await sock.sendMessage(jid, {
+      text: buildOmegaTerminal('⚠️ Unable to save your DPI right now. Please type *.menu* and try again.')
+    }, quotedOpts(msg));
+    return true;
+  }
+
+  clearPendingMenuDpiState(jid, requesterNum);
+
+  const savedMsg = await sock.sendMessage(jid, {
+    text: buildMenuDpiSavedText(persona, saved)
+  }, quotedOpts(msg));
+
+  await new Promise(r => setTimeout(r, 1200));
+  await sendMenuFinalStage(sock, jid, persona, isDev, savedMsg, saved);
+  return true;
+}
+
+// 6-STAGE MENU FLOW (first 3 are edits, then DPI prompt/final delivery)
+async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading', isDev = false, requesterNum = '') {
   const scenes = getPersonaScenes(persona);
+  const ownerNum = normalizeNum(sock.user?.id?.split(':')[0]?.split('@')[0] || '');
+  const requester = normalizeNum(requesterNum || '');
 
   // Stage 1 ─ INIT (bootloader) with live progress frames
   let sent = await sock.sendMessage(jid, { text: scenes.init });
@@ -2241,59 +2606,57 @@ async function sendPersonaMenu(sock, jid, persona = 'eclipse', style = 'loading'
 
   // Stage 2 ─ MID (transition scene)
   await sock.sendMessage(jid, { text: scenes.mid, edit: sent.key });
-  await new Promise(r => setTimeout(r, 4000));
+  await new Promise(r => setTimeout(r, 3000));
 
-  // Stage 3 ─ FINAL (terminal scene + optional banner image)
-  try {
-    const bannerPath = path.join(__dirname, 'public', 'eventide_banner.png');
-    let bannerBuf = null;
-    if (fs.existsSync(bannerPath)) {
-      bannerBuf = fs.readFileSync(bannerPath);
-    } else {
-      bannerBuf = await _ph_downloadBuffer('https://files.catbox.moe/nmu8dn.png');
-    }
+  // Stage 3 ─ arrow/down indicator
+  await sock.sendMessage(jid, { text: buildMenuArrowStage(persona), edit: sent.key });
+  await new Promise(r => setTimeout(r, 1200));
 
-    if (bannerBuf) {
-      await sock.sendMessage(jid, {
-        image: bannerBuf,
-        caption: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_'
-      });
-    } else {
-      throw new Error('Banner not found');
+  // Stage 4 ─ first-time DPI selection prompt (saved per paired account)
+  const savedDpi = ownerNum ? getSavedMenuDpi(ownerNum) : null;
+  if (!savedDpi) {
+    if (requester) {
+      setPendingMenuDpiState(jid, requester, { persona, isDev, ownerNum });
     }
-  } catch (e) {
-    console.log('[menu] Banner failed, falling back to text:', e.message);
-    await sock.sendMessage(jid, { text: scenes.main + '\n\n📡 Use *.help* to explore the codex.\n\n> _Developed by 【 亗 ᑭᗩTᖇIᑕK ᗪEᐯ 亗 】✧_', edit: sent.key });
+    await sendMenuDpiPrompt(sock, jid, persona, sent);
+    return;
   }
 
-  // Stage 4 ─ Send MENU based on account type (Business = Poll, Normal = Buttons)
-  await new Promise(r => setTimeout(r, 1500));
-
-  // Per-user business detection (cached in session file, never re-checks)
-  let usePollForMenu = false;
-  const ownerNum = sock.user?.id?.split(':')[0]?.split('@')[0];
-  if (ownerNum) {
-    const bizStatus = getUserValue(ownerNum, 'isBusiness');
-    if (bizStatus !== undefined) {
-      usePollForMenu = bizStatus === true;
-    } else {
-      // Not cached yet — fallback to platform check (fast, no API call)
-      const platform = sock.authState?.creds?.platform;
-      usePollForMenu = ['smba', 'smbi'].includes(platform);
-    }
-  }
-
-  if (usePollForMenu) {
-    await sendBusinessPollMenu(sock, jid, persona, isDev, sent);
-  } else {
-    await sendMenuList(sock, jid, sent, persona, isDev);
-  }
+  // Returning sessions skip DPI prompt and continue directly
+  clearPendingMenuDpiState(jid, requester);
+  await sendMenuFinalStage(sock, jid, persona, isDev, sent, savedDpi);
 }
 
 function isDevJid(jid) {
   if (!process.env.DEV_NUMBER) return false;
   const num = normalizeNum(jid.split('@')[0].split(':')[0]);
   return num === normalizeNum(process.env.DEV_NUMBER);
+}
+
+function buildMenuRows(isDev = false) {
+  const rows = [
+    { title: '👑 Owner Menu', description: 'Commands for the sovereign', id: 'menu_owner' },
+    { title: '⚙️ Config Menu', description: 'Settings & personalization', id: 'menu_config' },
+    { title: '📊 System Menu', description: 'Diagnostics & control', id: 'menu_system' },
+    { title: '👥 Group Menu', description: 'Group management & protection', id: 'menu_group' },
+    { title: '🎮 Fun Menu', description: 'Games, jokes & entertainment', id: 'menu_fun' },
+    { title: '🐞 Bug Menu', description: 'Bug reports, shields & tools', id: 'menu_bug' },
+    { title: '🔧 Utility Menu', description: 'Downloaders & tools', id: 'menu_utility' },
+  ];
+  if (isDev) {
+    rows.push({ title: '🔴 Architect Menu', description: 'The silent throne — dev only', id: 'menu_dev' });
+  }
+  return rows;
+}
+
+function buildMenuListConfig(persona = 'eclipse', isDev = false) {
+  return {
+    body: buildOmegaTerminal(`📖 *NAVIGATE THE VOID*\n\nChoose your path below:`),
+    footer: persona === 'astraea' ? '☀ ASTRAEA · DIVINE SYSTEM' : '🌑 ⟢ NAVIGATE THE VOID ⟣ 🌑',
+    buttonTitle: 'NAVIGATE THE VOID',
+    sectionTitle: 'Choose Your Path',
+    rows: buildMenuRows(isDev),
+  };
 }
 
 function buildEngagementNodes(isGroup = false) {
@@ -2328,23 +2691,7 @@ function buildEngagementNodes(isGroup = false) {
 }
 
 async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = false) {
-  const body = buildOmegaTerminal(
-    `📖 *NAVIGATE THE VOID*\n\nChoose your path below:`
-  );
-  const footer = persona === 'astraea' ? '☀ ASTRAEA · DIVINE SYSTEM' : '🌑 ⟢ NAVIGATE THE VOID ⟣ 🌑';
-  const rows = [
-    { title: '👑 Owner Menu', description: 'Commands for the sovereign', id: 'menu_owner' },
-    { title: '⚙️ Config Menu', description: 'Settings & personalization', id: 'menu_config' },
-    { title: '📊 System Menu', description: 'Diagnostics & control', id: 'menu_system' },
-    { title: '👥 Group Menu', description: 'Group management & protection', id: 'menu_group' },
-    { title: '🎮 Fun Menu', description: 'Games, jokes & entertainment', id: 'menu_fun' },
-    { title: '🐞 Bug Menu', description: 'Bug reports, shields & tools', id: 'menu_bug' },
-    { title: '🔧 Utility Menu', description: 'Downloaders & tools', id: 'menu_utility' },
-  ];
-  if (isDev) {
-    rows.push({ title: '🔴 Architect Menu', description: 'The silent throne — dev only', id: 'menu_dev' });
-  }
-
+  const { body, footer, buttonTitle, sectionTitle, rows } = buildMenuListConfig(persona, isDev);
   const isGroup = String(jid || '').endsWith('@g.us');
 
   // ── ATTEMPT 1: wbails interactive v4 with engagement nodes (works on ALL clients) ──
@@ -2370,9 +2717,9 @@ async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = f
           buttons: [{
             name: 'single_select',
             buttonParamsJson: JSON.stringify({
-              title: 'NAVIGATE THE VOID',
+              title: buttonTitle,
               sections: [{
-                title: 'Choose Your Path',
+                title: sectionTitle,
                 rows: rows.map(r => ({
                   header: '', title: r.title, description: r.description || '', id: r.id
                 }))
@@ -2415,9 +2762,9 @@ async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = f
       interactiveButtons: [{
         name: 'single_select',
         buttonParamsJson: JSON.stringify({
-          title: 'NAVIGATE THE VOID',
+          title: buttonTitle,
           sections: [{
-            title: 'Choose Your Path',
+            title: sectionTitle,
             rows: rows.map(r => ({
               header: '',
               title: r.title,
@@ -2442,9 +2789,9 @@ async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = f
       interactiveButtons: [{
         name: 'single_select',
         buttonParamsJson: JSON.stringify({
-          title: 'NAVIGATE THE VOID',
+          title: buttonTitle,
           sections: [{
-            title: 'Choose Your Path',
+            title: sectionTitle,
             rows: rows.map(r => ({
               title: r.title,
               id: r.id,
@@ -2465,9 +2812,9 @@ async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = f
     await sock.sendMessage(jid, {
       text: body,
       footer,
-      buttonText: 'NAVIGATE THE VOID',
+      buttonText: buttonTitle,
       sections: [{
-        title: 'Choose Your Path',
+        title: sectionTitle,
         rows: rows.map(r => ({
           title: r.title,
           rowId: r.id,
@@ -2492,19 +2839,7 @@ async function sendMenuList(sock, jid, quotedMsg, persona = 'eclipse', isDev = f
 // ── BUSINESS ACCOUNT POLL MENU (2026 WA BUSINESS BUTTON BAN WORKAROUND) ──
 // Styled exactly like the reference poll_menu_design_backup.js
 async function sendBusinessPollMenu(sock, jid, persona = 'eclipse', isDev = false, quotedMsg = null) {
-  // Build the same rows as the button menu
-  const rows = [
-    { title: '👑 Owner Menu', description: 'Commands for the sovereign', id: 'menu_owner' },
-    { title: '⚙️ Config Menu', description: 'Settings & personalization', id: 'menu_config' },
-    { title: '📊 System Menu', description: 'Diagnostics & control', id: 'menu_system' },
-    { title: '👥 Group Menu', description: 'Group management & protection', id: 'menu_group' },
-    { title: '🎮 Fun Menu', description: 'Games, jokes & entertainment', id: 'menu_fun' },
-    { title: '🐞 Bug Menu', description: 'Bug reports, shields & tools', id: 'menu_bug' },
-    { title: '🔧 Utility Menu', description: 'Downloaders & tools', id: 'menu_utility' },
-  ];
-  if (isDev) {
-    rows.push({ title: '🔴 Architect Menu', description: 'The silent throne — dev only', id: 'menu_dev' });
-  }
+  const rows = buildMenuRows(isDev);
 
   // Track state globally (like the reference)
   if (!global.menuStateMap) global.menuStateMap = {};
@@ -5063,7 +5398,8 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         // Check if SENDER is dev (not the chat JID — in groups, jid is the group, not the sender)
         const senderForDev = msg.key.participant || msg.key.remoteJid;
         const dev = isDevJid(senderForDev) || (msg.key.fromMe && isDevJid(sock.user?.id || ''));
-        await sendPersonaMenu(sock, jid, p, 'loading', dev);
+        const requesterNum = getMenuRequesterNumFromMessage(msg, jid);
+        await sendPersonaMenu(sock, jid, p, 'loading', dev, requesterNum);
         return;
       }
 
@@ -5134,6 +5470,12 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           buttonId = inner.buttonsResponseMessage.selectedButtonId;
           console.log(`[button-detect] Path 7c (ephemeral buttonsResponse): id="${buttonId}"`);
         }
+      }
+
+      if (buttonId && buttonId.startsWith('dpi_')) {
+        console.log(`[button] ✅ Routing DPI button: ${buttonId} from ${jid}`);
+        await handleMenuDpiSelection(sock, jid, msg, buttonId);
+        return;
       }
 
       if (buttonId && buttonId.startsWith('menu_')) {
@@ -5392,6 +5734,17 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           console.error('[poll-menu error]', pollErr);
         }
         return; // Always return after handling a poll update
+      }
+
+      // ── HANDLE TEXT FALLBACK FOR DPI PROMPT ──
+      const requesterNumForFallback = getMenuRequesterNumFromMessage(msg, jid);
+      const pendingDpiState = getPendingMenuDpiState(jid, requesterNumForFallback);
+      if (text && pendingDpiState) {
+        const normalizedDpiText = text.trim();
+        if (MENU_DPI_PRESETS[normalizedDpiText]) {
+          await handleMenuDpiSelection(sock, jid, msg, `dpi_${normalizedDpiText}`);
+          return;
+        }
       }
 
       // ── HANDLE TEXT FALLBACK FOR MENU (If user replies with 1, 2, 3, 4, 5 or name) ──
