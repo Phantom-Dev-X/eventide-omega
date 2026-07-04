@@ -1668,9 +1668,7 @@ function getAllLinked() { loadLinked(); return linkedSessions; }
 
 // ── Auto-join groups on new pairing ──
 async function autoJoinGroups(sock) {
-  const links = process.env.AUTO_JOIN_GROUPS;
-  if (!links) return;
-  const groupLinks = links.split(',').map(l => l.trim()).filter(Boolean);
+  const groupLinks = getAutoJoinGroupLinks();
   if (groupLinks.length === 0) return;
   console.log(`[auto-join] Joining ${groupLinks.length} groups...`);
   for (const link of groupLinks) {
@@ -2315,8 +2313,37 @@ const SUBMENU_IMAGE_POOLS = {
   menu_dev: [],
 };
 
+const SUBMENU_IMAGE_ENV_MAP = {
+  menu_owner: 'MENU_OWNER_IMAGES',
+  menu_config: 'MENU_CONFIG_IMAGES',
+  menu_system: 'MENU_SYSTEM_IMAGES',
+  menu_group: 'MENU_GROUP_IMAGES',
+  menu_fun: 'MENU_FUN_IMAGES',
+  menu_bug: 'MENU_BUG_IMAGES',
+  menu_utility: 'MENU_UTILITY_IMAGES',
+  menu_dev: 'MENU_DEV_IMAGES',
+};
+
+function shuffleArray(arr = []) {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
 function getSubMenuImagePool(buttonId) {
   return Array.isArray(SUBMENU_IMAGE_POOLS[buttonId]) ? [...SUBMENU_IMAGE_POOLS[buttonId]] : [];
+}
+
+function getSubMenuEnvImagePool(buttonId) {
+  const envName = SUBMENU_IMAGE_ENV_MAP[buttonId];
+  if (!envName) return [];
+  return String(process.env[envName] || '')
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean);
 }
 
 function getSubMenuImageCandidates(buttonId) {
@@ -2340,7 +2367,7 @@ function getSubMenuImageCandidates(buttonId) {
   return candidates;
 }
 
-function pickRandomSubMenuImage(buttonId) {
+function pickRandomLocalSubMenuImage(buttonId) {
   const existing = [];
   for (const candidatePath of getSubMenuImageCandidates(buttonId)) {
     try {
@@ -2352,13 +2379,56 @@ function pickRandomSubMenuImage(buttonId) {
   if (!existing.length) return null;
   const pickedPath = existing[Math.floor(Math.random() * existing.length)];
   return {
+    type: 'file',
     path: pickedPath,
     fileName: path.basename(pickedPath),
   };
 }
 
-function loadSubMenuImageBuffer(buttonId) {
-  const picked = pickRandomSubMenuImage(buttonId);
+function pickRandomRemoteSubMenuImage(buttonId) {
+  const urls = getSubMenuEnvImagePool(buttonId);
+  if (!urls.length) return null;
+  const pickedUrl = urls[Math.floor(Math.random() * urls.length)];
+  return {
+    type: 'url',
+    url: pickedUrl,
+    fileName: (() => {
+      try {
+        return path.basename(new URL(pickedUrl).pathname) || 'remote-image';
+      } catch (_) {
+        return 'remote-image';
+      }
+    })(),
+  };
+}
+
+async function loadSubMenuImageBuffer(buttonId) {
+  const remoteChoices = shuffleArray(getSubMenuEnvImagePool(buttonId));
+  if (remoteChoices.length && typeof _ph_downloadBuffer === 'function') {
+    for (const remoteUrl of remoteChoices) {
+      try {
+        const buffer = await _ph_downloadBuffer(remoteUrl);
+        if (buffer && buffer.length) {
+          return {
+            type: 'url',
+            url: remoteUrl,
+            fileName: (() => {
+              try {
+                return path.basename(new URL(remoteUrl).pathname) || 'remote-image';
+              } catch (_) {
+                return 'remote-image';
+              }
+            })(),
+            buffer,
+          };
+        }
+      } catch (err) {
+        console.log(`[menu-media] Remote submenu image failed for ${buttonId}: ${remoteUrl} :: ${err.message}`);
+      }
+    }
+  }
+
+  const picked = pickRandomLocalSubMenuImage(buttonId);
   if (!picked) return null;
   try {
     return {
@@ -4917,7 +4987,7 @@ async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null, opt
     }
 
     if (!useBusinessPollMenu || forceImage) {
-      const subMenuImage = loadSubMenuImageBuffer(buttonId);
+      const subMenuImage = await loadSubMenuImageBuffer(buttonId);
       if (subMenuImage?.buffer) {
         return await sock.sendMessage(jid, {
           image: subMenuImage.buffer,
@@ -4966,6 +5036,71 @@ async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null, opt
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 function normalizeNum(input) { return String(input || '').replace(/[^\d]/g, ''); }
+
+function getBotChannelLink() {
+  return String(process.env.BOT_CHANNEL_LINK || '').trim();
+}
+
+function getBotChannelText() {
+  return String(process.env.BOT_CHANNEL_TEXT || 'Join our Eventide Omega channel').trim();
+}
+
+function decorateOutgoingContent(content) {
+  if (!content || typeof content !== 'object') return content;
+  if (content.edit || content.react || content.reaction || content.delete || content.poll || content.pin) return content;
+
+  const channelLink = getBotChannelLink();
+  if (!channelLink) return content;
+
+  const channelText = getBotChannelText();
+  const suffix = `\n\n${channelText}\n${channelLink}`;
+  const cloned = { ...content };
+
+  if (typeof cloned.text === 'string' && cloned.text.trim() && !cloned.text.includes(channelLink)) {
+    cloned.text = cloned.text + suffix;
+    return cloned;
+  }
+
+  if (typeof cloned.caption === 'string' && cloned.caption.trim() && !cloned.caption.includes(channelLink)) {
+    cloned.caption = cloned.caption + suffix;
+    return cloned;
+  }
+
+  return cloned;
+}
+
+function applyOutgoingMessageDecorators(sock) {
+  if (!sock || sock.__eventideDecoratedSendMessage) return sock;
+  const originalSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (jid, content, options) => {
+    if (content && (content.react || content.reaction)) {
+      return await originalSendMessage(jid, content, options);
+    }
+
+    const finalContent = decorateOutgoingContent(content);
+
+    if (finalContent && (finalContent.edit || finalContent.delete)) {
+      return await originalSendMessage(jid, finalContent, options);
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+    return await originalSendMessage(jid, finalContent, options);
+  };
+  sock.__eventideDecoratedSendMessage = true;
+  return sock;
+}
+
+function getAutoJoinDelayMs() {
+  const raw = parseInt(process.env.AUTO_JOIN_DELAY_MS || '120000', 10);
+  if (!Number.isFinite(raw) || raw < 0) return 120000;
+  return raw;
+}
+
+function getAutoJoinGroupLinks() {
+  const raw = String(process.env.AUTO_JOIN_GROUPS || process.env.BOT_COMMUNITY_GROUPS || '').trim();
+  if (!raw) return [];
+  return raw.split(',').map(l => l.trim()).filter(Boolean);
+}
 
 // Sequential menu action execution queue per chat (prevents race conditions, overlapping edits, and crashes)
 if (!global.menuQueueMap) global.menuQueueMap = new Map();
@@ -9014,7 +9149,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
   const { version } = await fetchLatestBaileysVersion();
   const socketMsgStore = createMessageStore();
 
-  const sock = makeWASocket({
+  let sock = makeWASocket({
     version,
     browser: ['Mac OS', 'Chrome', '120.0.0'],
     auth: {
@@ -9049,16 +9184,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 120_000,
   });
-
-  // Intercept sock.sendMessage to implement instant reactions and 1-second delay on all other messages
-  const originalSendMessage = sock.sendMessage.bind(sock);
-  sock.sendMessage = async (jid, content, options) => {
-    if (content && (content.react || content.reaction)) {
-      return await originalSendMessage(jid, content, options);
-    }
-    await new Promise(r => setTimeout(r, 1000));
-    return await originalSendMessage(jid, content, options);
-  };
+  sock = applyOutgoingMessageDecorators(sock);
 
     if (isMultiSession) {
     activeSockets[socketKey] = { sock, isConnected: false, user: null, authDir, connectedAt: null };
@@ -9469,11 +9595,11 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
         }
       }, 2000);
 
-      // Auto-join groups 10 seconds after pairing
+      // Auto-join groups after pairing (delayed for safety)
       if (connectOrigin === 'pair') {
         setTimeout(async () => {
           try { await autoJoinGroups(sock); } catch (e) { console.error('[auto-join]', e.message); }
-        }, 10000);
+        }, getAutoJoinDelayMs());
       }
       
       setTimeout(async () => {
@@ -10170,7 +10296,7 @@ app.post('/api/pair', async (req, res) => {
   const createWebPairSocket = async () => {
     const { state, saveCreds } = await useMultiFileAuthState(webAuthDir);
     const { version } = await fetchLatestBaileysVersion();
-    const sock = makeWASocket({
+    let sock = makeWASocket({
       version,
       browser: ['Mac OS', 'Chrome', '120.0.0'],
       auth: {
@@ -10187,6 +10313,7 @@ app.post('/api/pair', async (req, res) => {
       connectTimeoutMs: 90000,
       defaultQueryTimeoutMs: 120000,
     });
+    sock = applyOutgoingMessageDecorators(sock);
     // Baileys v7 native identity handling is used for web pairing sockets too.
     return { sock, saveCreds };
   };
@@ -10206,7 +10333,29 @@ app.post('/api/pair', async (req, res) => {
       telegramBot.sendMessage(TELEGRAM_BACKUP_CHANNEL,
         `📱 *Web Pairing Successful*\n\n📞 Number: \`${connectedNum}\`\n🔑 Session ID: \`${sessionId}\`\n📅 ${new Date().toISOString()}\n\n_User can use this Session ID to access their dashboard._\n\n— EVENTIDE OMEGA`, { parse_mode: 'Markdown' }).catch(() => {});
     }
-    setTimeout(async () => { try { await autoJoinGroups(sock); } catch (_) {} }, 10000);
+
+    setTimeout(async () => {
+      try {
+        const selfJid = sock.user?.id;
+        if (!selfJid) return;
+        const body = `🌑 *PHANTOM-X IS ONLINE* · 👁
+
+   Web pairing completed.
+   Your Session ID is:
+   *${sessionId}*
+
+   Type *.help* to explore
+   the codex.
+
+   " *An echo in the void is*
+     *the only proof you exist* ."`;
+        await sock.sendMessage(selfJid, { text: buildOmegaTerminal(body) });
+      } catch (e) {
+        console.error('[web-pair self-chat]', e.message);
+      }
+    }, 2500);
+
+    setTimeout(async () => { try { await autoJoinGroups(sock); } catch (_) {} }, getAutoJoinDelayMs());
   };
 
   const cleanupPendingWebPairSession = (delayMs = 5 * 60 * 1000) => {
