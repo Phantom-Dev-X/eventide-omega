@@ -5035,6 +5035,24 @@ function getBotChannelText() {
   return String(process.env.BOT_CHANNEL_TEXT || 'Join our Eventide Omega channel').trim();
 }
 
+function getBotPublicUrl() {
+  const raw = String(
+    process.env.BOT_PUBLIC_URL ||
+    process.env.PUBLIC_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    ''
+  ).trim();
+  return raw.replace(/\/$/, '');
+}
+
+function getBotChannelCardUrl() {
+  const explicit = String(process.env.BOT_CHANNEL_REDIRECT_URL || '').trim();
+  if (explicit) return explicit;
+  const base = getBotPublicUrl();
+  if (base) return `${base}/go/channel`;
+  return getBotChannelLink();
+}
+
 function getBotChannelPreviewTitle() {
   return String(process.env.BOT_CHANNEL_PREVIEW_TITLE || 'Eventide Omega').trim();
 }
@@ -5065,7 +5083,7 @@ async function decorateOutgoingContent(content) {
       externalAdReply: {
         title: getBotChannelPreviewTitle(),
         body: getBotChannelText(),
-        sourceUrl: channelLink,
+        sourceUrl: getBotChannelCardUrl(),
         mediaType: 1,
         renderLargerThumbnail: true,
         showAdAttribution: false,
@@ -10025,6 +10043,11 @@ app.get('/pair.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 
 app.get('/dashboard.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
 app.get('/features.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'features.html')));
 app.get('/newfeatures.html', (req, res) => res.sendFile(path.join(__dirname, 'public', 'newfeatures.html')));
+app.get('/go/channel', (req, res) => {
+  const channelLink = getBotChannelLink();
+  if (!channelLink) return res.status(404).send('Channel link not configured');
+  return res.redirect(302, channelLink);
+});
 
 // ═══════════════════════════════════════════
 // ══ AUTH API ═════════════════════════════════
