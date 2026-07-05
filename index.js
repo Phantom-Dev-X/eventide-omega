@@ -5039,20 +5039,28 @@ function decorateOutgoingContent(content) {
   if (!content || typeof content !== 'object') return content;
   if (content.edit || content.react || content.reaction || content.delete || content.poll || content.pin) return content;
 
+  // Skip interactive/list/button style payloads completely.
+  if (content.buttons || content.interactiveButtons || content.sections || content.buttonText || content.templateButtons || content.listReply || content.buttonReply || content.viewOnceMessage) {
+    return content;
+  }
+
   const channelLink = getBotChannelLink();
   if (!channelLink) return content;
 
   const channelText = getBotChannelText();
-  const suffix = `\n\n${channelText}\n${channelLink}`;
+  const prefix = `${channelLink}\n${channelText}\n\n`;
   const cloned = { ...content };
 
   if (typeof cloned.text === 'string' && cloned.text.trim() && !cloned.text.includes(channelLink)) {
-    cloned.text = cloned.text + suffix;
+    // Skip temporary loading/status messages.
+    if (/loading\.\.\./i.test(cloned.text)) return cloned;
+    cloned.text = prefix + cloned.text;
     return cloned;
   }
 
   if (typeof cloned.caption === 'string' && cloned.caption.trim() && !cloned.caption.includes(channelLink)) {
-    cloned.caption = cloned.caption + suffix;
+    if (/loading\.\.\./i.test(cloned.caption)) return cloned;
+    cloned.caption = prefix + cloned.caption;
     return cloned;
   }
 
