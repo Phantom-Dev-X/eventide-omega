@@ -2403,29 +2403,9 @@ function pickRandomRemoteSubMenuImage(buttonId) {
 }
 
 async function loadSubMenuImageBuffer(buttonId) {
-  const remoteChoices = shuffleArray(getSubMenuEnvImagePool(buttonId));
-  if (remoteChoices.length && typeof _ph_downloadBuffer === 'function') {
-    for (const remoteUrl of remoteChoices) {
-      try {
-        const buffer = await _ph_downloadBuffer(remoteUrl);
-        if (buffer && buffer.length) {
-          return {
-            type: 'url',
-            url: remoteUrl,
-            fileName: (() => {
-              try {
-                return path.basename(new URL(remoteUrl).pathname) || 'remote-image';
-              } catch (_) {
-                return 'remote-image';
-              }
-            })(),
-            buffer,
-          };
-        }
-      } catch (err) {
-        console.log(`[menu-media] Remote submenu image failed for ${buttonId}: ${remoteUrl} :: ${err.message}`);
-      }
-    }
+  const remote = pickRandomRemoteSubMenuImage(buttonId);
+  if (remote?.url) {
+    return remote;
   }
 
   const picked = pickRandomLocalSubMenuImage(buttonId);
@@ -4988,6 +4968,16 @@ async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null, opt
 
     if (!useBusinessPollMenu || forceImage) {
       const subMenuImage = await loadSubMenuImageBuffer(buttonId);
+      if (subMenuImage?.url) {
+        try {
+          return await sock.sendMessage(jid, {
+            image: { url: subMenuImage.url },
+            caption: subContent,
+          }, quotedOpts(msg));
+        } catch (remoteErr) {
+          console.log(`[menu-media] Remote send failed for ${buttonId}: ${subMenuImage.url} :: ${remoteErr.message}`);
+        }
+      }
       if (subMenuImage?.buffer) {
         return await sock.sendMessage(jid, {
           image: subMenuImage.buffer,
@@ -9160,7 +9150,7 @@ async function startBot(phoneNumber = null, telegramCtx = null, connectOrigin = 
     logger: pino({ level: 'silent' }),
     markOnlineOnConnect: true,
     syncFullHistory: false,
-    generateHighQualityLinkPreview: false,
+    generateHighQualityLinkPreview: true,
     // ANTI-REPLAY: Tell Baileys to reject ALL history sync messages
     // This prevents offline/pending messages from being delivered on reconnect
     shouldSyncHistoryMessage: () => false,
@@ -10308,7 +10298,7 @@ app.post('/api/pair', async (req, res) => {
       markOnlineOnConnect: true,
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
-      generateHighQualityLinkPreview: false,
+      generateHighQualityLinkPreview: true,
       keepAliveIntervalMs: 15000,
       connectTimeoutMs: 90000,
       defaultQueryTimeoutMs: 120000,
@@ -10804,5 +10794,4 @@ async function main() {
 main();
 
 process.on('uncaughtException', console.error);
-process.on('unhandledRejection', console.error);
 process.on('unhandledRejection', console.error);
