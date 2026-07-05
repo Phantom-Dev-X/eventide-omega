@@ -10,7 +10,7 @@ Module._resolveFilename = function (request, ...rest) {
   return _origResolve(request, ...rest);
 };
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, makeCacheableSignalKeyStore, generateWAMessageFromContent, proto, downloadContentFromMessage, getContentType, getUrlInfo } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
 const TelegramBot = require('node-telegram-bot-api');
@@ -5035,7 +5035,15 @@ function getBotChannelText() {
   return String(process.env.BOT_CHANNEL_TEXT || 'Join our Eventide Omega channel').trim();
 }
 
-function decorateOutgoingContent(content) {
+function getBotChannelPreviewTitle() {
+  return String(process.env.BOT_CHANNEL_PREVIEW_TITLE || 'Eventide Omega').trim();
+}
+
+function getBotChannelPreviewThumbnail() {
+  return String(process.env.BOT_CHANNEL_PREVIEW_THUMBNAIL || '').trim();
+}
+
+async function decorateOutgoingContent(content) {
   if (!content || typeof content !== 'object') return content;
   if (content.edit || content.react || content.reaction || content.delete || content.poll || content.pin) return content;
 
@@ -5047,20 +5055,23 @@ function decorateOutgoingContent(content) {
   const channelLink = getBotChannelLink();
   if (!channelLink) return content;
 
-  const channelText = getBotChannelText();
-  const prefix = `${channelLink}\n${channelText}\n\n`;
   const cloned = { ...content };
 
-  if (typeof cloned.text === 'string' && cloned.text.trim() && !cloned.text.includes(channelLink)) {
+  if (typeof cloned.text === 'string' && cloned.text.trim()) {
     // Skip temporary loading/status messages.
     if (/loading\.\.\./i.test(cloned.text)) return cloned;
-    cloned.text = prefix + cloned.text;
-    return cloned;
-  }
-
-  if (typeof cloned.caption === 'string' && cloned.caption.trim() && !cloned.caption.includes(channelLink)) {
-    if (/loading\.\.\./i.test(cloned.caption)) return cloned;
-    cloned.caption = prefix + cloned.caption;
+    cloned.contextInfo = {
+      ...(cloned.contextInfo || {}),
+      externalAdReply: {
+        title: getBotChannelPreviewTitle(),
+        body: getBotChannelText(),
+        sourceUrl: channelLink,
+        mediaType: 1,
+        renderLargerThumbnail: true,
+        showAdAttribution: false,
+        ...(getBotChannelPreviewThumbnail() ? { thumbnailUrl: getBotChannelPreviewThumbnail() } : {})
+      }
+    };
     return cloned;
   }
 
@@ -5075,7 +5086,7 @@ function applyOutgoingMessageDecorators(sock) {
       return await originalSendMessage(jid, content, options);
     }
 
-    const finalContent = decorateOutgoingContent(content);
+    const finalContent = await decorateOutgoingContent(content);
 
     if (finalContent && (finalContent.edit || finalContent.delete)) {
       return await originalSendMessage(jid, finalContent, options);
