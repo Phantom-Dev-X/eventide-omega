@@ -67,6 +67,7 @@ const pairingInProgress = new Set();
 let botStartTime = Date.now();
 let successfulPairings = 0;
 const SESSION_FILE = 'sessions.json';
+const FORWARD_ASSETS_FILE = 'forward_assets.json';
 
 // ═══════════════════════════════════════════════════════════════════════
 // ══ DOWNLOADER HELPERS (multi-tier fallbacks for reliability) ═══════════
@@ -2045,6 +2046,131 @@ function savePollCache() {
   }
 }
 
+let forwardAssetsCache = {};
+
+function loadForwardAssets() {
+  try {
+    if (fs.existsSync(FORWARD_ASSETS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(FORWARD_ASSETS_FILE, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        forwardAssetsCache = parsed;
+        console.log(`[forward-assets] ✅ Loaded ${Object.keys(forwardAssetsCache).length} categories`);
+      }
+    }
+  } catch (e) {
+    console.error('[forward-assets] Error loading forward assets database:', e.message);
+  }
+}
+
+function saveForwardAssets() {
+  try {
+    fs.writeFileSync(FORWARD_ASSETS_FILE, JSON.stringify(forwardAssetsCache, null, 2));
+    backupAuthToChannel().catch(() => {});
+  } catch (e) {
+    console.error('[forward-assets] Error saving forward assets database:', e.message);
+  }
+}
+
+function getForwardAssetsCategory(key) {
+  if (!key) return [];
+  const items = forwardAssetsCache[key];
+  return Array.isArray(items) ? items : [];
+}
+
+function setForwardAssetsCategory(key, items = []) {
+  if (!key) return [];
+  forwardAssetsCache[key] = Array.isArray(items) ? items : [];
+  saveForwardAssets();
+  return forwardAssetsCache[key];
+}
+
+function addForwardAssetRef(key, ref = {}) {
+  if (!key || !ref || !ref.jid || !ref.id) return null;
+  const existing = getForwardAssetsCategory(key);
+  existing.push({
+    jid: ref.jid,
+    id: ref.id,
+    type: ref.type || 'unknown',
+    source: ref.source || null,
+    createdAt: ref.createdAt || new Date().toISOString(),
+    meta: ref.meta || null,
+  });
+  setForwardAssetsCategory(key, existing);
+  return existing[existing.length - 1];
+}
+
+function clearForwardAssetsCategory(key) {
+  if (!key) return;
+  delete forwardAssetsCache[key];
+  saveForwardAssets();
+}
+
+function getForwardAssetsSummary() {
+  const summary = {};
+  for (const [key, value] of Object.entries(forwardAssetsCache)) {
+    summary[key] = Array.isArray(value) ? value.length : 0;
+  }
+  return summary;
+}
+
+function getExpectedForwardAssetCategories() {
+  return [
+    'menu_final',
+    'menu_owner',
+    'menu_config',
+    'menu_system',
+    'menu_group',
+    'menu_fun',
+    'menu_utility',
+    'menu_bug',
+    'menu_dev',
+    'antilink_on',
+    'antilink_off',
+    'antispam_on',
+    'antispam_off',
+    'antimention_on',
+    'antimention_off',
+    'antidelete_on',
+    'antidelete_off',
+    'mode_private',
+    'mode_public',
+    'kill_on',
+    'kill_off',
+    'lock',
+    'unlock'
+  ];
+}
+
+function formatForwardAssetLabel(key) {
+  return String(key || '')
+    .replace(/^menu_/, 'menu: ')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, m => m.toUpperCase());
+}
+
+function pickRandomForwardAssetRef(key) {
+  const items = getForwardAssetsCategory(key);
+  if (!items.length) return null;
+  return items[Math.floor(Math.random() * items.length)] || null;
+}
+
+async function sendStoredForwardAsset(sock, jid, category, quotedMsg = null, fallbackFn = null) {
+  const ref = pickRandomForwardAssetRef(category);
+  if (ref?.fullMessage) {
+    try {
+      const forwardSource = {
+        key: { remoteJid: ref.jid, fromMe: true, id: ref.id },
+        message: JSON.parse(JSON.stringify(ref.fullMessage))
+      };
+      return await sock.sendMessage(jid, { forward: forwardSource, __eventideSkipPromo: true }, quotedMsg?.message ? { quoted: quotedMsg } : {});
+    } catch (e) {
+      console.log(`[forward-assets] Forward failed for ${category}: ${e.message}`);
+    }
+  }
+  if (typeof fallbackFn === 'function') return await fallbackFn();
+  return null;
+}
+
 // ==================== FULL DESIGN SYSTEM (EXACT FROM DESIGN_SYSTEM.md) ====================
 const ECLIPSE_WIDTH = 30;
 const ECLIPSE_BORDER = "═".repeat(ECLIPSE_WIDTH);
@@ -2420,6 +2546,38 @@ async function loadSubMenuImageBuffer(buttonId) {
   }
 }
 
+function getAllSubMenuImageEntries(buttonId) {
+  const remoteUrls = getSubMenuEnvImagePool(buttonId);
+  if (remoteUrls.length) {
+    return remoteUrls.map((url) => ({
+      type: 'url',
+      url,
+      fileName: (() => {
+        try { return path.basename(new URL(url).pathname) || 'remote-image'; }
+        catch (_) { return 'remote-image'; }
+      })(),
+      source: 'env'
+    }));
+  }
+
+  const seen = new Set();
+  const locals = [];
+  for (const candidatePath of getSubMenuImageCandidates(buttonId)) {
+    try {
+      if (fs.existsSync(candidatePath) && !seen.has(candidatePath)) {
+        seen.add(candidatePath);
+        locals.push({
+          type: 'file',
+          path: candidatePath,
+          fileName: path.basename(candidatePath),
+          source: 'local'
+        });
+      }
+    } catch (_) {}
+  }
+  return locals;
+}
+
 // Progress frames (exact)
 const eclipseProgressFrames = [
   "   ◐ initiating umbral protocol\n" +
@@ -2685,6 +2843,121 @@ async function sendMenuDpiPrompt(sock, jid, persona = 'eclipse', quotedMsg = nul
   console.log(`[menu-dpi] ⚠️ Fallback text DPI prompt sent to ${jid}`);
 }
 
+function getMenuForwardSeedDefinitions(persona = 'eclipse', isDev = false) {
+  return [
+    {
+      category: 'menu_final',
+      type: 'final',
+      caption: buildMenuFinalCaption(persona, '370', isDev),
+      assets: (() => {
+        const banner = loadMenuBannerBuffer();
+        if (!banner) return [];
+        if (banner.url) return [{ type: 'url', url: banner.url, fileName: banner.fileName || 'menu-final', source: banner.type || 'remote' }];
+        if (banner.path) return [{ type: 'file', path: banner.path, fileName: banner.fileName || path.basename(banner.path), source: banner.type || 'local' }];
+        return [];
+      })()
+    },
+    { category: 'menu_owner', type: 'submenu', buttonId: 'menu_owner', caption: getSubMenuContent('menu_owner', persona), assets: getAllSubMenuImageEntries('menu_owner') },
+    { category: 'menu_config', type: 'submenu', buttonId: 'menu_config', caption: getSubMenuContent('menu_config', persona), assets: getAllSubMenuImageEntries('menu_config') },
+    { category: 'menu_system', type: 'submenu', buttonId: 'menu_system', caption: getSubMenuContent('menu_system', persona), assets: getAllSubMenuImageEntries('menu_system') },
+    { category: 'menu_group', type: 'submenu', buttonId: 'menu_group', caption: getSubMenuContent('menu_group', persona), assets: getAllSubMenuImageEntries('menu_group') },
+    { category: 'menu_fun', type: 'submenu', buttonId: 'menu_fun', caption: getSubMenuContent('menu_fun', persona), assets: getAllSubMenuImageEntries('menu_fun') },
+    { category: 'menu_utility', type: 'submenu', buttonId: 'menu_utility', caption: getSubMenuContent('menu_utility', persona), assets: getAllSubMenuImageEntries('menu_utility') },
+  ];
+}
+
+async function seedForwardMenuAssets(sock, jid, msg, persona = 'eclipse', isDev = false) {
+  const categoriesToClear = ['menu_final','menu_owner','menu_config','menu_system','menu_group','menu_fun','menu_utility'];
+  for (const key of categoriesToClear) clearForwardAssetsCategory(key);
+
+  const defs = getMenuForwardSeedDefinitions(persona, isDev);
+  let postedCount = 0;
+  const report = [];
+
+  await sock.sendMessage(jid, {
+    text: buildOmegaTerminal('🌑 *FORWARD MENU ASSET SEEDING STARTED*\n\nPosting menu assets into this channel one by one...'),
+    __eventideSkipPromo: true
+  }, quotedOpts(msg));
+
+  for (const def of defs) {
+    if (!def.caption) {
+      report.push(`⚪ ${formatForwardAssetLabel(def.category)} — no caption available`);
+      continue;
+    }
+
+    const assets = Array.isArray(def.assets) ? def.assets : [];
+    if (!assets.length) {
+      const sent = await sock.sendMessage(jid, {
+        text: def.caption,
+        __eventideSkipPromo: true
+      }, quotedOpts(msg));
+      if (sent?.key?.id) {
+        addForwardAssetRef(def.category, {
+          jid,
+          id: sent.key.id,
+          type: 'text',
+          source: 'seed:no-image',
+          meta: { persona, buttonId: def.buttonId || null }
+        });
+        postedCount++;
+        report.push(`✅ ${formatForwardAssetLabel(def.category)} — 1 text asset`);
+      } else {
+        report.push(`⚠️ ${formatForwardAssetLabel(def.category)} — failed to store text asset`);
+      }
+      await new Promise(r => setTimeout(r, 1200));
+      continue;
+    }
+
+    let categoryCount = 0;
+    for (const asset of assets) {
+      let sent = null;
+      try {
+        if (asset.type === 'url' && asset.url) {
+          sent = await sock.sendMessage(jid, {
+            image: { url: asset.url },
+            caption: def.caption,
+            __eventideSkipPromo: true
+          }, quotedOpts(msg));
+        } else if (asset.type === 'file' && asset.path) {
+          sent = await sock.sendMessage(jid, {
+            image: fs.readFileSync(asset.path),
+            caption: def.caption,
+            __eventideSkipPromo: true
+          }, quotedOpts(msg));
+        }
+      } catch (e) {
+        console.log(`[forward-assets] Failed posting ${def.category} asset ${asset.fileName || asset.url}: ${e.message}`);
+      }
+
+      if (sent?.key?.id) {
+        addForwardAssetRef(def.category, {
+          jid,
+          id: sent.key.id,
+          type: asset.type,
+          source: asset.url || asset.path || asset.source || null,
+          meta: { persona, buttonId: def.buttonId || null, fileName: asset.fileName || null },
+          fullMessage: sent.message || null
+        });
+        categoryCount++;
+        postedCount++;
+      }
+      await new Promise(r => setTimeout(r, 1200));
+    }
+
+    report.push(`${categoryCount > 0 ? '✅' : '⚠️'} ${formatForwardAssetLabel(def.category)} — ${categoryCount} asset(s)`);
+  }
+
+  await sock.sendMessage(jid, {
+    text: buildOmegaTerminal(
+      `🌑 *FORWARD MENU ASSET SEEDING COMPLETE*\n\n` +
+      `Posted assets: *${postedCount}*\n\n` +
+      report.join('\n') +
+      `\n\nWe can proceed.`
+    ),
+    __eventideSkipPromo: true
+  }, quotedOpts(msg));
+}
+
 async function sendDpiPromptTestMatrix(sock, jid, quotedMsg = null) {
   const footer = 'EVENTIDE OMEGA · DPI TEST';
   const intro = buildOmegaTerminal(
@@ -2896,14 +3169,22 @@ async function sendMenuFinalStage(sock, jid, persona = 'eclipse', isDev = false,
       return;
     }
 
-    const anchorMsg = await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi);
+    const anchorMsg = await sendStoredForwardAsset(
+      sock,
+      jid,
+      'menu_final',
+      quotedMsg,
+      async () => await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi)
+    );
     await sendBusinessPollMenu(sock, jid, persona, isDev, anchorMsg);
   } else {
-    /*
-    // Combined image + caption + menu attempt kept for later tuning.
-    await sendMenuListWithMedia(sock, jid, quotedMsg, persona, isDev, dpi);
-    */
-    const anchorMsg = await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi);
+    const anchorMsg = await sendStoredForwardAsset(
+      sock,
+      jid,
+      'menu_final',
+      quotedMsg,
+      async () => await sendMenuBannerCaption(sock, jid, persona, isDev, quotedMsg, dpi)
+    );
     await sendMenuList(sock, jid, anchorMsg, persona, isDev);
   }
 }
@@ -4967,6 +5248,9 @@ async function handleMenuButton(sock, jid, msg, buttonId, editMsgKey = null, opt
     }
 
     if (!useBusinessPollMenu || forceImage) {
+      const forwarded = await sendStoredForwardAsset(sock, jid, buttonId, msg, null);
+      if (forwarded) return forwarded;
+
       const subMenuImage = await loadSubMenuImageBuffer(buttonId);
       if (subMenuImage?.url) {
         try {
@@ -5063,17 +5347,22 @@ function getBotChannelPreviewThumbnail() {
 
 async function decorateOutgoingContent(content) {
   if (!content || typeof content !== 'object') return content;
-  if (content.edit || content.react || content.reaction || content.delete || content.poll || content.pin) return content;
+  const cloned = { ...content };
+
+  if (cloned.__eventideSkipPromo) {
+    delete cloned.__eventideSkipPromo;
+    return cloned;
+  }
+
+  if (cloned.edit || cloned.react || cloned.reaction || cloned.delete || cloned.poll || cloned.pin) return cloned;
 
   // Skip interactive/list/button style payloads completely.
-  if (content.buttons || content.interactiveButtons || content.sections || content.buttonText || content.templateButtons || content.listReply || content.buttonReply || content.viewOnceMessage) {
-    return content;
+  if (cloned.buttons || cloned.interactiveButtons || cloned.sections || cloned.buttonText || cloned.templateButtons || cloned.listReply || cloned.buttonReply || cloned.viewOnceMessage) {
+    return cloned;
   }
 
   const channelLink = getBotChannelLink();
-  if (!channelLink) return content;
-
-  const cloned = { ...content };
+  if (!channelLink) return cloned;
 
   if (typeof cloned.text === 'string' && cloned.text.trim()) {
     // Skip temporary loading/status messages.
@@ -5496,7 +5785,7 @@ async function _executeBackupTask(force = false) {
     }
     // Backup essential JSON files that must survive redeploys
     // (covers web accounts, linked numbers, poll cache, menu theme, etc.)
-    const essentialFiles = [USERS_FILE, LINKED_FILE, SESSION_FILE, GROUP_SETTINGS_FILE, WARNINGS_FILE, WELCOME_FILE, SCHEDULE_FILE, POLL_CACHE_FILE, PERSONA_FILE, 'menu_banner.jpg'];
+    const essentialFiles = [USERS_FILE, LINKED_FILE, SESSION_FILE, GROUP_SETTINGS_FILE, WARNINGS_FILE, WELCOME_FILE, SCHEDULE_FILE, POLL_CACHE_FILE, FORWARD_ASSETS_FILE, PERSONA_FILE, 'menu_banner.jpg'];
     let filesAdded = 0;
     for (const f of essentialFiles) {
       if (fs.existsSync(f)) {
@@ -6436,7 +6725,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       }
 
       if (lower === '.help') {
-        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.send <number> [text] — send msg to a number (owner only)\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n.acccheck — check if this is Business or Normal account\n.testpoll — trigger a test Business poll-based menu (owner only)\n.testdpiui — send multiple Stage 4 DPI button test variants (owner only)\n\nMore coming.') }, quotedOpts(msg));
+        await sock.sendMessage(jid, { text: buildOmegaTerminal('📖 CODEX\n.menu .eclipse .astraea .phantom — animated menu\n.persona eclipse|astraea\n.ping\n.send <number> [text] — send msg to a number (owner only)\n.dev\n.pair <number> — request pairing code\n.relink — clear session and restart pairing\n.telegram.pair — cloud pairing info\n.acccheck — check if this is Business or Normal account\n.testpoll — trigger a test Business poll-based menu (owner only)\n.testdpiui — send multiple Stage 4 DPI button test variants (owner only)\n.forwardassets — show stored forwarded asset categories (owner only)\n.seedforwardassets menu — seed menu assets into your channel (owner only)\n\nMore coming.') }, quotedOpts(msg));
         return;
       }
 
@@ -6447,6 +6736,61 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           return;
         }
         await sendDpiPromptTestMatrix(sock, jid, msg);
+        return;
+      }
+
+      // ── .forwardassets command (owner only) — show stored forward-asset registry ──
+      if (lower === '.forwardassets') {
+        if (!senderIsOwner) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('🔒 *ACCESS_DENIED*\n\n   only the sovereign may\n   inspect the forward asset vault.') }, quotedOpts(msg));
+          return;
+        }
+        const expected = getExpectedForwardAssetCategories();
+        const summary = getForwardAssetsSummary();
+        const presentLines = [];
+        const missingLines = [];
+        for (const key of expected) {
+          const count = summary[key] || 0;
+          if (count > 0) {
+            presentLines.push(`✅ ${formatForwardAssetLabel(key)} — ${count}`);
+          } else {
+            missingLines.push(`⚪ ${formatForwardAssetLabel(key)}`);
+          }
+        }
+        const extraKeys = Object.keys(summary).filter(k => !expected.includes(k));
+        const extrasBlock = extraKeys.length
+          ? `\n\n*Extra stored keys*\n${extraKeys.map(k => `• ${k} — ${summary[k]}`).join('\n')}`
+          : '';
+        const textBody = [
+          '*FORWARD ASSET VAULT*',
+          '',
+          `Configured: *${presentLines.length}*`,
+          `Missing: *${missingLines.length}*`,
+          '',
+          '*Configured categories*',
+          presentLines.length ? presentLines.join('\n') : 'None yet.',
+          '',
+          '*Still missing*',
+          missingLines.length ? missingLines.join('\n') : 'Nothing missing.',
+          extrasBlock
+        ].join('\n');
+        await sock.sendMessage(jid, { text: buildOmegaTerminal(textBody) }, quotedOpts(msg));
+        return;
+      }
+
+      // ── .seedforwardassets menu command (owner only) ──
+      if (lower === '.seedforwardassets menu') {
+        if (!senderIsOwner) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('🔒 *ACCESS_DENIED*\n\n   only the sovereign may\n   seed the forward asset vault.') }, quotedOpts(msg));
+          return;
+        }
+        if (!String(jid).endsWith('@newsletter')) {
+          await sock.sendMessage(jid, { text: buildOmegaTerminal('⚠️ *CHANNEL ONLY*\n\nRun *.seedforwardassets menu* inside your WhatsApp channel so the bot can post and store the menu assets there.') }, quotedOpts(msg));
+          return;
+        }
+        const senderForDev = msg.key.participant || msg.key.remoteJid;
+        const dev = isDevJid(senderForDev) || (msg.key.fromMe && isDevJid(sock.user?.id || ''));
+        await seedForwardMenuAssets(sock, jid, msg, persona, dev);
         return;
       }
 
@@ -9095,7 +9439,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       if (lower.startsWith(".")) {
         // Check if this is a known command missing arguments (not an unknown command)
         const cmdWord = lower.split(/\s+/)[0];
-        const knownCmds = ['.menu','.eclipse','.astraea','.phantom','.ping','.send','.uptime','.status','.owner','.dev','.help','.acccheck','.kill','.mode','.vv','.xx','.vtn','.new','.block','.unblock','.blocklist','.join','.leave','.broadcast','.getpp','.getgpp','.chatinfo','.groups','.setname','.setbio','.setpp','.setmenupic','.delmenupic','.setalias','.delalias','.aliaslist','.prefix','.autoreact','.persona','.restart','.relink','.pair','.telegram.pair','.testpoll','.testdpiui','.testquickreply','.kick','.add','.promote','.demote','.setgname','.setgdesc','.setgpp','.lock','.unlock','.link','.revoke','.tagall','.everyone','.all','.hidetag','.ht','.membercount','.antilink','.antispam','.antimention','.antidelete','.antibot','.antibug','.warn','.warnlist','.resetwarn','.welcome','.setwelcome','.goodbye','.setgoodbye','.schedule','.unschedule','.schedules','.joke','.fact','.quote','.roast','.compliment','.ship','.rate','.vibe','.8ball','.flip','.roll','.dare','.truth','.rps','.dl','.yt','.ytmp3','.play','.lyrics','.tiktok','.ig','.fb','.x','.pin','.translate','.weather','.calc','.genpwd','.base64','.removebg','.sticker','.s','.toimg','.tts','.voice','.tovn','.qr','.blur','.invert','.grayscale','.brighten','.darken','.sharpen','.pixelate'];
+        const knownCmds = ['.menu','.eclipse','.astraea','.phantom','.ping','.send','.uptime','.status','.owner','.dev','.help','.acccheck','.kill','.mode','.vv','.xx','.vtn','.new','.block','.unblock','.blocklist','.join','.leave','.broadcast','.getpp','.getgpp','.chatinfo','.groups','.setname','.setbio','.setpp','.setmenupic','.delmenupic','.setalias','.delalias','.aliaslist','.prefix','.autoreact','.persona','.restart','.relink','.pair','.telegram.pair','.testpoll','.testdpiui','.testquickreply','.forwardassets','.seedforwardassets','.kick','.add','.promote','.demote','.setgname','.setgdesc','.setgpp','.lock','.unlock','.link','.revoke','.tagall','.everyone','.all','.hidetag','.ht','.membercount','.antilink','.antispam','.antimention','.antidelete','.antibot','.antibug','.warn','.warnlist','.resetwarn','.welcome','.setwelcome','.goodbye','.setgoodbye','.schedule','.unschedule','.schedules','.joke','.fact','.quote','.roast','.compliment','.ship','.rate','.vibe','.8ball','.flip','.roll','.dare','.truth','.rps','.dl','.yt','.ytmp3','.play','.lyrics','.tiktok','.ig','.fb','.x','.pin','.translate','.weather','.calc','.genpwd','.base64','.removebg','.sticker','.s','.toimg','.tts','.voice','.tovn','.qr','.blur','.invert','.grayscale','.brighten','.darken','.sharpen','.pixelate'];
         if (knownCmds.includes(cmdWord)) {
           await sock.sendMessage(jid, { text: `⚠️ *${cmdWord}* requires arguments.\n\nType *.help* or select a menu for usage info.` }, quotedOpts(msg));
         } else {
@@ -10718,6 +11062,7 @@ async function main() {
   // loadPersonas() removed — personas now in user_sessions/*.json
   loadSessions();
   loadPollCache();
+  loadForwardAssets();
   loadGroupSettings();
   loadWarnings();
   loadWelcome();
