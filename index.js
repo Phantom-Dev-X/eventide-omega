@@ -4619,6 +4619,8 @@ function buildGroupMenuEclipse() {
   ┃    └─ remove foreign machines.
   ┃  .antibug on/off
   ┃    └─ shield against crashes.
+  ┃  .pp on/off
+  ┃    └─ AI image generation (Pollinations).
   ┗━━━━━━━━━━━━━━━━━━━━━━━
 
   ┏━ ⟢ *W A R N I N G S*
@@ -4754,6 +4756,8 @@ function buildGroupMenuAstraea() {
   ║    └─ REMOVE FOREIGN MACHINES.
   ║  .antibug on/off
   ║    └─ SHIELD AGAINST CRASHES.
+  ║  .pp on/off
+  ║    └─ AI IMAGE GENERATOR.
   ╚═══════════════════════════
 
   ╔═ ☀ *W A R N I N G S*
@@ -6058,6 +6062,46 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
               await sock.sendMessage(jid, { text: `⚠️ @${(msg.key.participant || msg.key.remoteJid).split('@')[0]}, mass mentions are not allowed.`, mentions: [msg.key.participant || msg.key.remoteJid] });
             } catch (_) {}
           }
+        }
+      }
+
+      // ── POLLINATIONS AI IMAGE GENERATOR ──
+      // If group has .pp enabled and someone sends an image with a caption,
+      // use the caption as a prompt to generate a new image via Pollinations API
+      if (String(jid).endsWith('@g.us') && !msg.key.fromMe && msg.message?.imageMessage) {
+        const aiCaption = (msg.message.imageMessage.caption || '').trim();
+        if (aiCaption && getGroupSetting(jid, 'pollinations')) {
+          // Don't await this — run in background so we don't block other messages
+          (async () => {
+            try {
+              await sock.sendMessage(jid, { react: { text: '🎨', key: msg.key } });
+              // Build Pollinations URL — encode the caption as the prompt
+              const prompt = encodeURIComponent(aiCaption);
+              const pollUrl = `https://image.pollinations.ai/prompt/${prompt}?width=1024&height=1024&nologo=true&t=${Date.now()}`;
+              // Download the generated image
+              const https = require('https');
+              const imgBuf = await new Promise((resolve, reject) => {
+                https.get(pollUrl, (res) => {
+                  if (res.statusCode === 301 || res.statusCode === 302) {
+                    // Follow redirect
+                    https.get(res.headers.location, (res2) => {
+                      const c = []; res2.on('data', d => c.push(d)); res2.on('end', () => resolve(Buffer.concat(c)));
+                    }).on('error', reject);
+                  } else {
+                    const c = []; res.on('data', d => c.push(d)); res.on('end', () => resolve(Buffer.concat(c)));
+                  }
+                }).on('error', reject);
+              });
+              // Send the generated image back to the group
+              await sock.sendMessage(jid, {
+                image: imgBuf,
+                caption: `🎨 *Pollinations AI*\n📝 _${aiCaption}_\n\n✨ Generated from your prompt!`
+              }, { quoted: msg });
+            } catch (e) {
+              console.log('[pollinations] Error:', e.message);
+              await sock.sendMessage(jid, { text: `❌ AI image generation failed: ${e.message}` }, quotedOpts(msg));
+            }
+          })();
         }
       }
 
@@ -7981,6 +8025,20 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         const val = lower.endsWith('on');
         setGroupSetting(jid, 'antibug', val);
         await sock.sendMessage(jid, { text: `${val ? '🛡️ Antibug enabled — crash messages will be blocked' : '🔓 Antibug disabled'}.` }, quotedOpts(msg));
+        return;
+      }
+
+      // ── .pp on/off — AI image generation for group ──
+      // When enabled, any image sent with a caption triggers Pollinations AI
+      // to generate a new image using the caption as a prompt
+      if (lower === '.pp on' || lower === '.pp off') {
+        if (!String(jid).endsWith('@g.us')) { await sock.sendMessage(jid, { text: '⚠️ Groups only.' }, quotedOpts(msg)); return; }
+        if (!senderIsOwner) { await sock.sendMessage(jid, { text: '🔒 Owner only.' }, quotedOpts(msg)); return; }
+        const val = lower.endsWith('on');
+        setGroupSetting(jid, 'pollinations', val);
+        await sock.sendMessage(jid, { text: val
+          ? '🎨 *Pollinations AI enabled!*\n\nSend any image with a caption — the caption becomes the prompt and I\'ll generate a new image from it.\n\n_Example: Send a photo of a car with caption "make it fly"_ ✨'
+          : '🔓 Pollinations AI disabled for this group.' }, quotedOpts(msg));
         return;
       }
 
