@@ -6038,8 +6038,9 @@ async function pollinationsGenerate(promptText) {
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      // Cache-busting seed to avoid stale CDN responses
-      const seed = Date.now();
+      // Cache-busting seed — MUST be <= 2147483647 (32-bit int max)
+      // Date.now() is too big, so use modulo + random offset
+      const seed = (Date.now() % 2147483647) + Math.floor(Math.random() * 1000);
       const url = `https://image.pollinations.ai/prompt/${prompt}?width=1024&height=1024&nologo=true&seed=${seed}`;
       console.log(`[pollinations] Attempt ${attempt}/${MAX_RETRIES} — prompt: "${cleanPrompt.slice(0, 60)}"`);
 
@@ -6091,7 +6092,25 @@ async function pollinationsGenerate(promptText) {
               reject(new Error('FORBIDDEN'));
               return;
             }
-            // 503 = overloaded — retry
+            // 500 = internal server error — retry
+            if (res.statusCode === 500) {
+              clearTimeout(timeout);
+              const errChunks = [];
+              res.on('data', d => errChunks.push(d));
+              res.on('end', () => {
+                const body = Buffer.concat(errChunks).toString().slice(0, 300);
+                console.log(`[pollinations] 500 body: ${body}`);
+                reject(new Error('SERVER_ERROR'));
+              });
+              return;
+            }
+            // 502 = bad gateway — retry
+            if (res.statusCode === 502) {
+              clearTimeout(timeout);
+              res.resume();
+              reject(new Error('BAD_GATEWAY'));
+              return;
+            }
             if (res.statusCode === 503) {
               clearTimeout(timeout);
               res.resume();
@@ -6136,7 +6155,7 @@ async function pollinationsGenerate(promptText) {
       return imgBuf;
 
     } catch (e) {
-      const isRetryable = ['RATE_LIMITED', 'SERVICE_OVERLOADED', 'FORBIDDEN', 'BAD_REQUEST'].includes(e.message);
+      const isRetryable = ['RATE_LIMITED', 'SERVICE_OVERLOADED', 'FORBIDDEN', 'BAD_REQUEST', 'SERVER_ERROR', 'BAD_GATEWAY'].includes(e.message);
 
       if (isRetryable && attempt < MAX_RETRIES) {
         // Exponential backoff: 5s, 12s, 25s
@@ -6165,8 +6184,15 @@ async function pollinationsGenerate(promptText) {
       if (e.message === 'SERVICE_OVERLOADED') {
         throw new Error('⚠️ AI is overloaded. Try again in a few minutes.');
       }
+      if (e.message === 'SERVER_ERROR') {
+        throw new Error('⚠️ AI server error. Try again in a minute.');
+      }
+      if (e.message === 'BAD_GATEWAY') {
+        throw new Error('⚠️ AI service is down. Try again shortly.');
+      }
       if (e.message.startsWith('HTTP_')) {
-        throw new Error(`⚠️ AI returned an error. Try again later.`);
+        const code = e.message.replace('HTTP_', '');
+        throw new Error(`⚠️ AI returned error ${code}. Try again later.`);
       }
       if (e.message.includes('timed out')) {
         throw new Error('⚠️ AI took too long to respond. Try again.');
