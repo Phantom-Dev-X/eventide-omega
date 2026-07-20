@@ -5036,6 +5036,11 @@ function buildUtilityMenuEclipse() {
   ┃       to a whatsapp sticker.
   ┃       reply to any media.
   ┃
+  ┃  .im <prompt>
+  ┃    └─ AI image generation.
+  ┃       reply to an image or
+  ┃       type .im make it fly.
+  ┃
   ┃  .toimg
   ┃    └─ convert a sticker back
   ┃       to a normal image.
@@ -5181,6 +5186,11 @@ function buildUtilityMenuAstraea() {
   ║    └─ CONVERT IMAGE OR VIDEO
   ║       TO A WHATSAPP STICKER.
   ║       REPLY TO ANY MEDIA.
+  ║
+  ║  .im <prompt>
+  ║    └─ AI IMAGE GENERATION.
+  ║       REPLY TO AN IMAGE OR
+  ║       TYPE .IM MAKE IT FLY.
   ║
   ║  .toimg
   ║    └─ CONVERT A STICKER BACK
@@ -9224,6 +9234,59 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
           });
           await sock.sendMessage(jid, { image: resultBuf, caption: '✅ Background removed' }, quotedOpts(msg));
         } catch (e) { await sock.sendMessage(jid, { text: `❌ ${e.message}` }, quotedOpts(msg)); }
+        return;
+      }
+
+      // ── .im <prompt> — AI image generation via Pollinations ──
+      // Reply to an image with .im <your prompt> to generate a new AI image
+      // Or just type .im <prompt> without replying (text-to-image only)
+      if (lower.startsWith('.im ') || lower === '.im') {
+        const promptText = text.slice(4).trim(); // everything after ".im "
+        if (!promptText) {
+          await sock.sendMessage(jid, { text: '🎨 Usage: Reply to an image with *.im <prompt>*\n\nExample: .im make it look like a painting' }, quotedOpts(msg));
+          return;
+        }
+        try {
+          await sock.sendMessage(jid, { react: { text: '🎨', key: msg.key } });
+          await sock.sendMessage(jid, { text: `⏳ Generating AI image for: _${promptText}_ ...` }, quotedOpts(msg));
+
+          // Build Pollinations URL with the prompt
+          const prompt = encodeURIComponent(promptText);
+          const pollUrl = `https://image.pollinations.ai/prompt/${prompt}?width=1024&height=1024&nologo=true&t=${Date.now()}`;
+
+          // Download the generated image (with redirect following)
+          const _https = require('https');
+          const imgBuf = await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error('Generation timed out (30s)')), 30000);
+            _https.get(pollUrl, (res) => {
+              if (res.statusCode === 301 || res.statusCode === 302) {
+                // Follow redirect
+                _https.get(res.headers.location, (res2) => {
+                  const c = []; res2.on('data', d => c.push(d)); res2.on('end', () => { clearTimeout(timeout); resolve(Buffer.concat(c)); });
+                }).on('error', e => { clearTimeout(timeout); reject(e); });
+              } else if (res.statusCode === 200) {
+                const c = []; res.on('data', d => c.push(d)); res.on('end', () => { clearTimeout(timeout); resolve(Buffer.concat(c)); });
+              } else {
+                clearTimeout(timeout);
+                reject(new Error(`Pollinations returned status ${res.statusCode}`));
+              }
+            }).on('error', e => { clearTimeout(timeout); reject(e); });
+          });
+
+          // Validate we got an actual image (not an error page)
+          if (imgBuf.length < 1000) {
+            throw new Error('Generated image too small — prompt may have been blocked');
+          }
+
+          // Send the generated image
+          await sock.sendMessage(jid, {
+            image: imgBuf,
+            caption: `🎨 *Pollinations AI*\n📝 _${promptText}_\n\n✨ Your AI-generated image!`
+          }, quotedOpts(msg));
+        } catch (e) {
+          console.log('[.im] Pollinations error:', e.message);
+          await sock.sendMessage(jid, { text: `❌ AI generation failed: ${e.message}` }, quotedOpts(msg));
+        }
         return;
       }
 
