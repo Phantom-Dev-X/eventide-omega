@@ -4620,7 +4620,10 @@ function buildGroupMenuEclipse() {
   ┃  .antibug on/off
   ┃    └─ shield against crashes.
   ┃  .pp on/off
-  ┃    └─ AI image generation (Pollinations).
+  ┃    └─ AI image gen toggle (group).
+  ┃  .pp <prompt> (image caption)
+  ┃    └─ Send image with .pp caption to
+  ┃       generate AI image (works in DMs too).
   ┗━━━━━━━━━━━━━━━━━━━━━━━
 
   ┏━ ⟢ *W A R N I N G S*
@@ -4757,7 +4760,10 @@ function buildGroupMenuAstraea() {
   ║  .antibug on/off
   ║    └─ SHIELD AGAINST CRASHES.
   ║  .pp on/off
-  ║    └─ AI IMAGE GENERATOR.
+  ║    └─ AI IMAGE GEN TOGGLE (GROUP).
+  ║  .pp <prompt> (image caption)
+  ║    └─ SEND IMAGE WITH .pp CAPTION
+  ║       TO GENERATE AI IMAGE (DMs TOO).
   ╚═══════════════════════════
 
   ╔═ ☀ *W A R N I N G S*
@@ -5038,8 +5044,9 @@ function buildUtilityMenuEclipse() {
   ┃
   ┃  .im <prompt>
   ┃    └─ AI image generation.
-  ┃       reply to an image or
-  ┃       type .im make it fly.
+  ┃       type .im make it fly, or
+  ┃       reply to image+caption with .im
+  ┃       to use that caption as prompt.
   ┃
   ┃  .toimg
   ┃    └─ convert a sticker back
@@ -5189,8 +5196,9 @@ function buildUtilityMenuAstraea() {
   ║
   ║  .im <prompt>
   ║    └─ AI IMAGE GENERATION.
-  ║       REPLY TO AN IMAGE OR
-  ║       TYPE .IM MAKE IT FLY.
+  ║       TYPE .IM MAKE IT FLY, OR
+  ║       REPLY TO IMAGE+CAPTION WITH .IM
+  ║       TO USE THAT CAPTION AS PROMPT.
   ║
   ║  .toimg
   ║    └─ CONVERT A STICKER BACK
@@ -6276,20 +6284,52 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         }
       }
 
-      // ── POLLINATIONS AI IMAGE GENERATOR (.pp auto mode) ──
-      // If group has .pp enabled and someone sends an image with a caption,
-      // use the caption as a prompt to generate a new image via Pollinations API
-      if (String(jid).endsWith('@g.us') && !msg.key.fromMe && msg.message?.imageMessage) {
-        const aiCaption = (msg.message.imageMessage.caption || '').trim();
-        if (aiCaption && getGroupSetting(jid, 'pollinations')) {
-          // Run in background so we don't block other messages
+      // ── POLLINATIONS AI IMAGE GENERATOR (.pp caption trigger) ──
+      // When someone sends an image with a caption starting with ".pp",
+      // the rest of the caption becomes the prompt for AI image generation.
+      // Works in groups AND DMs. No need for ".pp on" to be enabled.
+      // Example: Send a photo with caption ".pp make it fly" → generates "make it fly"
+      if (!msg.key.fromMe && msg.message?.imageMessage) {
+        const rawCaption = (msg.message.imageMessage.caption || '').trim();
+        // Check if caption starts with .pp (case-insensitive)
+        // But skip ".pp on" and ".pp off" — those are commands handled later
+        if (rawCaption.toLowerCase().startsWith('.pp') && rawCaption.toLowerCase() !== '.pp on' && rawCaption.toLowerCase() !== '.pp off') {
+          const ppPrompt = rawCaption.slice(3).trim(); // everything after ".pp"
+          if (ppPrompt) {
+            // Run in background so we don't block other messages
+            (async () => {
+              try {
+                await sock.sendMessage(jid, { react: { text: '🎨', key: msg.key } });
+                await sock.sendMessage(jid, { text: `⏳ Generating AI image for: _${ppPrompt}_ ...\n\n_May take a few seconds — please wait_` }, { quoted: msg });
+                const imgBuf = await pollinationsGenerate(ppPrompt);
+                await sock.sendMessage(jid, {
+                  image: imgBuf,
+                  caption: `🎨 *Pollinations AI*\n📝 _${ppPrompt}_\n\n✨ Generated from your prompt!`
+                }, { quoted: msg });
+              } catch (e) {
+                console.log('[.pp] Pollinations error:', e.message);
+                await sock.sendMessage(jid, { text: `❌ AI generation failed: ${e.message}` }, quotedOpts(msg));
+              }
+            })();
+          } else {
+            // Caption is just ".pp" with no prompt text
+            (async () => {
+              await sock.sendMessage(jid, { text: '🎨 Usage: Send an image with caption *".pp <prompt>"*\n\nExample: Send a photo with caption _.pp make it fly_' }, { quoted: msg });
+            })();
+          }
+        }
+        // ── FALLBACK: .pp on auto-mode (groups only) ──
+        // If .pp is enabled in group and caption does NOT start with .pp,
+        // still trigger on any caption (legacy behavior for groups that already enabled it)
+        else if (rawCaption && String(jid).endsWith('@g.us') && getGroupSetting(jid, 'pollinations')) {
           (async () => {
             try {
               await sock.sendMessage(jid, { react: { text: '🎨', key: msg.key } });
-              const imgBuf = await pollinationsGenerate(aiCaption);
+              await sock.sendMessage(jid, { text: `⏳ Generating AI image for: _${rawCaption}_ ...\n\n_May take a few seconds — please wait_` }, { quoted: msg });
+              const imgBuf = await pollinationsGenerate(rawCaption);
               await sock.sendMessage(jid, {
                 image: imgBuf,
-                caption: `🎨 *Pollinations AI*\n📝 _${aiCaption}_\n\n✨ Generated from your prompt!`
+                caption: `🎨 *Pollinations AI*\n📝 _${rawCaption}_\n\n✨ Generated from your prompt!`
               }, { quoted: msg });
             } catch (e) {
               console.log('[.pp] Pollinations error:', e.message);
@@ -8231,7 +8271,7 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         const val = lower.endsWith('on');
         setGroupSetting(jid, 'pollinations', val);
         await sock.sendMessage(jid, { text: val
-          ? '🎨 *Pollinations AI enabled!*\n\nSend any image with a caption — the caption becomes the prompt and I\'ll generate a new image from it.\n\n_Example: Send a photo of a car with caption "make it fly"_ ✨'
+          ? '🎨 *Pollinations AI enabled!*\n\nSend any image with a caption — the caption becomes the prompt and I\'ll generate a new image from it.\n\n_Example: Send a photo with caption "make it fly"_ ✨\n\n💡 *Tip:* You can also use *.pp <prompt>* in any chat (groups + DMs) without enabling this — just send an image with caption starting with .pp!'
           : '🔓 Pollinations AI disabled for this group.' }, quotedOpts(msg));
         return;
       }
@@ -9424,12 +9464,23 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       // ── .im <prompt> — AI image generation via Pollinations ──
       // Reply to an image with .im <your prompt> to generate a new AI image
       // Or just type .im <prompt> without replying (text-to-image only)
+      // NEW: Reply to an image+caption message with just .im → uses the caption as prompt
       if (lower.startsWith('.im ') || lower === '.im') {
-        const promptText = text.slice(4).trim(); // everything after ".im "
+        let promptText = text.slice(4).trim(); // everything after ".im "
+
+        // If no prompt text provided, check if we're replying to an image+caption message
         if (!promptText) {
-          await sock.sendMessage(jid, { text: '🎨 Usage: *.im <prompt>*\n\nExample: .im make it look like a painting\n\nTip: Reply to an image with .im <prompt> or just type it!' }, quotedOpts(msg));
-          return;
+          const quotedRaw = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+          const quotedCaption = (quotedRaw?.imageMessage?.caption || '').trim();
+          if (quotedCaption) {
+            // Use the quoted image's caption as the prompt
+            promptText = quotedCaption;
+          } else {
+            await sock.sendMessage(jid, { text: '🎨 Usage: *.im <prompt>*\n\nExample: .im make it look like a painting\n\n💡 *Tip:* Reply to an image with caption using *.im* to use that caption as your prompt!' }, quotedOpts(msg));
+            return;
+          }
         }
+
         try {
           await sock.sendMessage(jid, { react: { text: '🎨', key: msg.key } });
           await sock.sendMessage(jid, { text: `⏳ Generating AI image for: _${promptText}_ ...\n\n_May take a few seconds — please wait_` }, quotedOpts(msg));
