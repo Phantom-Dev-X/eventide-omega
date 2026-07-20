@@ -6023,88 +6023,156 @@ async function pollinationsGenerate(promptText) {
   }
   _pollLastRequest = Date.now();
 
-  const prompt = encodeURIComponent(promptText);
   const MAX_RETRIES = 3;
+  const _https = require('https');
+
+  // Clean the prompt — strip characters that break URLs
+  let cleanPrompt = promptText
+    .replace(/[\r\n]+/g, ' ')       // newlines → space
+    .replace(/[<>{}|\\^~[\]`]/g, '') // remove problematic chars
+    .trim()
+    .slice(0, 400);                  // cap length to avoid URL too long
+  if (!cleanPrompt) cleanPrompt = 'beautiful image';
+
+  const prompt = encodeURIComponent(cleanPrompt);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      // Add cache-busting timestamp to avoid CDN cached errors
-      const url = `https://image.pollinations.ai/prompt/${prompt}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
-      console.log(`[pollinations] Attempt ${attempt}/${MAX_RETRIES} — prompt: "${promptText.slice(0, 50)}"`);
+      // Cache-busting seed to avoid stale CDN responses
+      const seed = Date.now();
+      const url = `https://image.pollinations.ai/prompt/${prompt}?width=1024&height=1024&nologo=true&seed=${seed}`;
+      console.log(`[pollinations] Attempt ${attempt}/${MAX_RETRIES} — prompt: "${cleanPrompt.slice(0, 60)}"`);
 
       const imgBuf = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Generation timed out (45s)')), 45000);
+        const timeout = setTimeout(() => reject(new Error('Generation timed out (60s)')), 60000);
 
         const doRequest = (reqUrl) => {
-          require('https').get(reqUrl, (res) => {
+          const parsedUrl = new URL(reqUrl);
+          const options = {
+            hostname: parsedUrl.hostname,
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: 'GET',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+              'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+            }
+          };
+
+          const req = _https.request(options, (res) => {
             // Follow redirects
-            if (res.statusCode === 301 || res.statusCode === 302) {
+            if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
               doRequest(res.headers.location);
               return;
             }
-            // 429 = rate limited — reject so we can retry
+            // 429 = rate limited — retry with backoff
             if (res.statusCode === 429) {
               clearTimeout(timeout);
-              // Drain the response to free the connection
               res.resume();
               reject(new Error('RATE_LIMITED'));
               return;
             }
-            // 503 = service overloaded — retry
+            // 400 = bad request (usually prompt issue) — retry once
+            if (res.statusCode === 400) {
+              clearTimeout(timeout);
+              const errChunks = [];
+              res.on('data', d => errChunks.push(d));
+              res.on('end', () => {
+                const body = Buffer.concat(errChunks).toString().slice(0, 300);
+                console.log(`[pollinations] 400 body: ${body}`);
+                reject(new Error('BAD_REQUEST'));
+              });
+              return;
+            }
+            // 403 = forbidden (usually missing User-Agent or blocked) — retry
+            if (res.statusCode === 403) {
+              clearTimeout(timeout);
+              res.resume();
+              reject(new Error('FORBIDDEN'));
+              return;
+            }
+            // 503 = overloaded — retry
             if (res.statusCode === 503) {
               clearTimeout(timeout);
               res.resume();
               reject(new Error('SERVICE_OVERLOADED'));
               return;
             }
-            // Success
+            // Success — collect image data
             if (res.statusCode === 200) {
               const chunks = [];
               res.on('data', d => chunks.push(d));
               res.on('end', () => { clearTimeout(timeout); resolve(Buffer.concat(chunks)); });
               return;
             }
-            // Any other error
+            // Any other error — collect body for debugging
             clearTimeout(timeout);
-            const errData = [];
-            res.on('data', d => errData.push(d));
+            const errChunks = [];
+            res.on('data', d => errChunks.push(d));
             res.on('end', () => {
-              const errBody = Buffer.concat(errData).toString().slice(0, 200);
-              reject(new Error(`HTTP ${res.statusCode}: ${errBody}`));
+              const errBody = Buffer.concat(errChunks).toString().slice(0, 300);
+              reject(new Error(`HTTP_${res.statusCode}`));
             });
-          }).on('error', e => { clearTimeout(timeout); reject(e); });
+          });
+
+          req.on('error', e => { clearTimeout(timeout); reject(e); });
+          req.end(); // important: end the request
         };
 
         doRequest(url);
       });
 
-      // Validate we got an actual image
-      if (imgBuf.length < 1000) {
-        throw new Error('Image too small — prompt may have been blocked');
+      // Validate we got an actual image (not an HTML error page)
+      if (imgBuf.length < 2000) {
+        // Might be an error page in disguise — check content
+        const sample = imgBuf.toString('utf8', 0, Math.min(100, imgBuf.length));
+        if (sample.includes('<html') || sample.includes('{"error"')) {
+          throw new Error('Got error page instead of image — prompt may be blocked');
+        }
+        throw new Error('Image too small — prompt may be blocked');
       }
 
-      console.log(`[pollinations] ✅ Success — ${imgBuf.length} bytes`);
+      console.log(`[pollinations] ✅ Success — ${imgBuf.length} bytes on attempt ${attempt}`);
       return imgBuf;
 
     } catch (e) {
-      const isRetryable = e.message === 'RATE_LIMITED' || e.message === 'SERVICE_OVERLOADED';
+      const isRetryable = ['RATE_LIMITED', 'SERVICE_OVERLOADED', 'FORBIDDEN', 'BAD_REQUEST'].includes(e.message);
 
       if (isRetryable && attempt < MAX_RETRIES) {
-        // Exponential backoff: 5s, 10s, 20s
-        const waitMs = 5000 * Math.pow(2, attempt - 1);
-        console.log(`[pollinations] ⏳ ${e.message} — retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s`);
+        // Exponential backoff: 5s, 12s, 25s
+        const waitMs = 5000 * Math.pow(2, attempt - 1) + (Math.random() * 2000);
+        console.log(`[pollinations] ⏳ ${e.message} — retry ${attempt}/${MAX_RETRIES} in ${Math.round(waitMs/1000)}s`);
         await new Promise(r => setTimeout(r, waitMs));
+        // On BAD_REQUEST, try simplifying the prompt on retry
+        if (e.message === 'BAD_REQUEST') {
+          // Strip more aggressively for retry
+          cleanPrompt = cleanPrompt.replace(/[^a-zA-Z0-9\s.,!?-]/g, '').trim();
+          if (!cleanPrompt) cleanPrompt = 'beautiful artistic image';
+        }
         continue;
       }
 
-      // Non-retryable error or out of retries
+      // Give up — return user-friendly error
       if (e.message === 'RATE_LIMITED') {
-        throw new Error('AI is busy right now. Please wait a minute and try again.');
+        throw new Error('🤖 AI is busy right now. Please wait a minute and try again.');
+      }
+      if (e.message === 'BAD_REQUEST') {
+        throw new Error('⚠️ AI couldn\'t process that prompt. Try different words.');
+      }
+      if (e.message === 'FORBIDDEN') {
+        throw new Error('⚠️ AI service blocked the request. Try again shortly.');
       }
       if (e.message === 'SERVICE_OVERLOADED') {
-        throw new Error('AI service is overloaded. Please try again in a few minutes.');
+        throw new Error('⚠️ AI is overloaded. Try again in a few minutes.');
       }
-      throw e; // Re-throw other errors as-is
+      if (e.message.startsWith('HTTP_')) {
+        throw new Error(`⚠️ AI returned an error. Try again later.`);
+      }
+      if (e.message.includes('timed out')) {
+        throw new Error('⚠️ AI took too long to respond. Try again.');
+      }
+      // Unknown error
+      throw new Error(`❌ Generation failed: ${e.message}`);
     }
   }
 }
