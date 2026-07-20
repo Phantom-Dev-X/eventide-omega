@@ -6002,6 +6002,113 @@ const socketKeyMap = new WeakMap();
 let lastRestoreCtx = null;
 let restoreQrDetected = false;
 
+// ═══════════════════════════════════════════════════════════════════════
+// ══ POLLINATIONS AI — Shared image generation helper                  ══
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Handles 429 (rate limit) with automatic retry + exponential backoff.
+// Enforces a global cooldown between requests so we don't spam the API.
+// Used by both .pp (auto group) and .im (manual command).
+
+let _pollLastRequest = 0;
+const _POLL_COOLDOWN_MS = 3000; // 3s minimum between requests
+
+async function pollinationsGenerate(promptText) {
+  // Enforce cooldown — wait if we're hitting too fast
+  const elapsed = Date.now() - _pollLastRequest;
+  if (elapsed < _POLL_COOLDOWN_MS) {
+    const wait = _POLL_COOLDOWN_MS - elapsed;
+    console.log(`[pollinations] Cooldown: waiting ${wait}ms`);
+    await new Promise(r => setTimeout(r, wait));
+  }
+  _pollLastRequest = Date.now();
+
+  const prompt = encodeURIComponent(promptText);
+  const MAX_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      // Add cache-busting timestamp to avoid CDN cached errors
+      const url = `https://image.pollinations.ai/prompt/${prompt}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
+      console.log(`[pollinations] Attempt ${attempt}/${MAX_RETRIES} — prompt: "${promptText.slice(0, 50)}"`);
+
+      const imgBuf = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Generation timed out (45s)')), 45000);
+
+        const doRequest = (reqUrl) => {
+          require('https').get(reqUrl, (res) => {
+            // Follow redirects
+            if (res.statusCode === 301 || res.statusCode === 302) {
+              doRequest(res.headers.location);
+              return;
+            }
+            // 429 = rate limited — reject so we can retry
+            if (res.statusCode === 429) {
+              clearTimeout(timeout);
+              // Drain the response to free the connection
+              res.resume();
+              reject(new Error('RATE_LIMITED'));
+              return;
+            }
+            // 503 = service overloaded — retry
+            if (res.statusCode === 503) {
+              clearTimeout(timeout);
+              res.resume();
+              reject(new Error('SERVICE_OVERLOADED'));
+              return;
+            }
+            // Success
+            if (res.statusCode === 200) {
+              const chunks = [];
+              res.on('data', d => chunks.push(d));
+              res.on('end', () => { clearTimeout(timeout); resolve(Buffer.concat(chunks)); });
+              return;
+            }
+            // Any other error
+            clearTimeout(timeout);
+            const errData = [];
+            res.on('data', d => errData.push(d));
+            res.on('end', () => {
+              const errBody = Buffer.concat(errData).toString().slice(0, 200);
+              reject(new Error(`HTTP ${res.statusCode}: ${errBody}`));
+            });
+          }).on('error', e => { clearTimeout(timeout); reject(e); });
+        };
+
+        doRequest(url);
+      });
+
+      // Validate we got an actual image
+      if (imgBuf.length < 1000) {
+        throw new Error('Image too small — prompt may have been blocked');
+      }
+
+      console.log(`[pollinations] ✅ Success — ${imgBuf.length} bytes`);
+      return imgBuf;
+
+    } catch (e) {
+      const isRetryable = e.message === 'RATE_LIMITED' || e.message === 'SERVICE_OVERLOADED';
+
+      if (isRetryable && attempt < MAX_RETRIES) {
+        // Exponential backoff: 5s, 10s, 20s
+        const waitMs = 5000 * Math.pow(2, attempt - 1);
+        console.log(`[pollinations] ⏳ ${e.message} — retry ${attempt}/${MAX_RETRIES} in ${waitMs / 1000}s`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+
+      // Non-retryable error or out of retries
+      if (e.message === 'RATE_LIMITED') {
+        throw new Error('AI is busy right now. Please wait a minute and try again.');
+      }
+      if (e.message === 'SERVICE_OVERLOADED') {
+        throw new Error('AI service is overloaded. Please try again in a few minutes.');
+      }
+      throw e; // Re-throw other errors as-is
+    }
+  }
+}
+
 async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messages, type }) {
     try {
       const msg = messages[0];
@@ -6075,41 +6182,24 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
         }
       }
 
-      // ── POLLINATIONS AI IMAGE GENERATOR ──
+      // ── POLLINATIONS AI IMAGE GENERATOR (.pp auto mode) ──
       // If group has .pp enabled and someone sends an image with a caption,
       // use the caption as a prompt to generate a new image via Pollinations API
       if (String(jid).endsWith('@g.us') && !msg.key.fromMe && msg.message?.imageMessage) {
         const aiCaption = (msg.message.imageMessage.caption || '').trim();
         if (aiCaption && getGroupSetting(jid, 'pollinations')) {
-          // Don't await this — run in background so we don't block other messages
+          // Run in background so we don't block other messages
           (async () => {
             try {
               await sock.sendMessage(jid, { react: { text: '🎨', key: msg.key } });
-              // Build Pollinations URL — encode the caption as the prompt
-              const prompt = encodeURIComponent(aiCaption);
-              const pollUrl = `https://image.pollinations.ai/prompt/${prompt}?width=1024&height=1024&nologo=true&t=${Date.now()}`;
-              // Download the generated image
-              const https = require('https');
-              const imgBuf = await new Promise((resolve, reject) => {
-                https.get(pollUrl, (res) => {
-                  if (res.statusCode === 301 || res.statusCode === 302) {
-                    // Follow redirect
-                    https.get(res.headers.location, (res2) => {
-                      const c = []; res2.on('data', d => c.push(d)); res2.on('end', () => resolve(Buffer.concat(c)));
-                    }).on('error', reject);
-                  } else {
-                    const c = []; res.on('data', d => c.push(d)); res.on('end', () => resolve(Buffer.concat(c)));
-                  }
-                }).on('error', reject);
-              });
-              // Send the generated image back to the group
+              const imgBuf = await pollinationsGenerate(aiCaption);
               await sock.sendMessage(jid, {
                 image: imgBuf,
                 caption: `🎨 *Pollinations AI*\n📝 _${aiCaption}_\n\n✨ Generated from your prompt!`
               }, { quoted: msg });
             } catch (e) {
-              console.log('[pollinations] Error:', e.message);
-              await sock.sendMessage(jid, { text: `❌ AI image generation failed: ${e.message}` }, quotedOpts(msg));
+              console.log('[.pp] Pollinations error:', e.message);
+              await sock.sendMessage(jid, { text: `❌ AI generation failed: ${e.message}` }, quotedOpts(msg));
             }
           })();
         }
@@ -9243,40 +9333,15 @@ async function handleMessagesUpsert(sock, socketMsgStore, firstConnRef, { messag
       if (lower.startsWith('.im ') || lower === '.im') {
         const promptText = text.slice(4).trim(); // everything after ".im "
         if (!promptText) {
-          await sock.sendMessage(jid, { text: '🎨 Usage: Reply to an image with *.im <prompt>*\n\nExample: .im make it look like a painting' }, quotedOpts(msg));
+          await sock.sendMessage(jid, { text: '🎨 Usage: *.im <prompt>*\n\nExample: .im make it look like a painting\n\nTip: Reply to an image with .im <prompt> or just type it!' }, quotedOpts(msg));
           return;
         }
         try {
           await sock.sendMessage(jid, { react: { text: '🎨', key: msg.key } });
-          await sock.sendMessage(jid, { text: `⏳ Generating AI image for: _${promptText}_ ...` }, quotedOpts(msg));
+          await sock.sendMessage(jid, { text: `⏳ Generating AI image for: _${promptText}_ ...\n\n_May take a few seconds — please wait_` }, quotedOpts(msg));
 
-          // Build Pollinations URL with the prompt
-          const prompt = encodeURIComponent(promptText);
-          const pollUrl = `https://image.pollinations.ai/prompt/${prompt}?width=1024&height=1024&nologo=true&t=${Date.now()}`;
-
-          // Download the generated image (with redirect following)
-          const _https = require('https');
-          const imgBuf = await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Generation timed out (30s)')), 30000);
-            _https.get(pollUrl, (res) => {
-              if (res.statusCode === 301 || res.statusCode === 302) {
-                // Follow redirect
-                _https.get(res.headers.location, (res2) => {
-                  const c = []; res2.on('data', d => c.push(d)); res2.on('end', () => { clearTimeout(timeout); resolve(Buffer.concat(c)); });
-                }).on('error', e => { clearTimeout(timeout); reject(e); });
-              } else if (res.statusCode === 200) {
-                const c = []; res.on('data', d => c.push(d)); res.on('end', () => { clearTimeout(timeout); resolve(Buffer.concat(c)); });
-              } else {
-                clearTimeout(timeout);
-                reject(new Error(`Pollinations returned status ${res.statusCode}`));
-              }
-            }).on('error', e => { clearTimeout(timeout); reject(e); });
-          });
-
-          // Validate we got an actual image (not an error page)
-          if (imgBuf.length < 1000) {
-            throw new Error('Generated image too small — prompt may have been blocked');
-          }
+          // Use shared helper with retry + backoff + cooldown
+          const imgBuf = await pollinationsGenerate(promptText);
 
           // Send the generated image
           await sock.sendMessage(jid, {
